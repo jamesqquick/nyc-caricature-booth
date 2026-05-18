@@ -91,10 +91,9 @@ app.get("/test-i2i", (c) => {
 								<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="3" />
 								<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
 							</svg>
-							<span>Generating… this usually takes 2–10s</span>
+							<span>Generating…</span>
 						</span>
 					</button>
-					<p id="i2i-hint" class="text-xs text-white/40">Takes ~5-15 seconds. The page will return the JPEG directly.</p>
 				</form>
 				<script>
 					(function () {
@@ -103,9 +102,6 @@ app.get("/test-i2i", (c) => {
 						const scene = document.getElementById("i2i-scene");
 						const idleLabel = button.querySelector('[data-label="idle"]');
 						const loadingLabel = button.querySelector('[data-label="loading"]');
-						const hint = document.getElementById("i2i-hint");
-						let started = 0;
-						let tickHandle = null;
 
 						function setLoading(on) {
 							// IMPORTANT: do not disable the file input. A disabled file input
@@ -122,21 +118,11 @@ app.get("/test-i2i", (c) => {
 
 						form.addEventListener("submit", function () {
 							setLoading(true);
-							started = Date.now();
-							hint.textContent = "Elapsed: 0.0s";
-							tickHandle = setInterval(function () {
-								const s = ((Date.now() - started) / 1000).toFixed(1);
-								hint.textContent = "Elapsed: " + s + "s";
-							}, 100);
 						});
 
 						// If the user comes back via the bfcache (browser back button) reset state.
 						window.addEventListener("pageshow", function (e) {
-							if (e.persisted) {
-								setLoading(false);
-								if (tickHandle) clearInterval(tickHandle);
-								hint.textContent = "Takes ~5-15 seconds. The page will return the JPEG directly.";
-							}
+							if (e.persisted) setLoading(false);
 						});
 					})();
 				</script>
