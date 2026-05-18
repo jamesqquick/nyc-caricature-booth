@@ -3,6 +3,10 @@
 	"name": "nyc-caricature-booth",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-07-18",
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS"
+	},
 	"observability": {
 		"enabled": true
 	}
