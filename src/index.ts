@@ -555,7 +555,7 @@ app.get("/test-workflow-moderate/:id", (c) => {
 
 						const t0 = Date.now();
 						startedEl.textContent = new Date().toLocaleTimeString();
-						setInterval(function () {
+						const tickHandle = setInterval(function () {
 							const s = ((Date.now() - t0) / 1000).toFixed(1);
 							elapsedEl.textContent = s + "s";
 						}, 100);
@@ -579,7 +579,13 @@ app.get("/test-workflow-moderate/:id", (c) => {
 								labelEl.textContent = s;
 								pulseEl.className = "size-3 rounded-full " + (colorMap[s] || "bg-zinc-400") + (terminal.has(s) ? "" : " animate-pulse");
 								rawEl.textContent = JSON.stringify(j.status, null, 2);
-								if (!terminal.has(s)) setTimeout(poll, 1000);
+								if (terminal.has(s)) {
+									clearInterval(tickHandle);
+									const finalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
+									elapsedEl.textContent = finalElapsed + "s (final)";
+								} else {
+									setTimeout(poll, 1000);
+								}
 							} catch (e) {
 								rawEl.textContent = "poll error: " + e.message;
 								setTimeout(poll, 2000);
