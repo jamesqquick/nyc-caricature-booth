@@ -38,15 +38,78 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 1.3 &middot; KV scenes seeded
+					Step 2.1 &middot; Workers AI hello world
 				</div>
+				<a href="/api/test-ai" target="_blank" rel="noopener" class="mt-6 text-sm text-white/60 hover:text-white underline underline-offset-4 transition">
+					🖼️ Try the AI image generator →
+				</a>
 			</main>`,
 		),
 	);
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "1.3" });
+	return c.json({ status: "ok", step: "2.1" });
+});
+
+/**
+ * Test endpoint: generate an image with Workers AI (FLUX.2 klein 4B).
+ * GET /api/test-ai?prompt=...
+ * Returns image/png directly so you can preview in browser.
+ */
+app.get("/api/test-ai", async (c) => {
+	const prompt =
+		c.req.query("prompt") ??
+		"A stylized illustration of a hot dog on a New York City sidewalk with yellow taxis blurred in the background, vibrant cartoon style.";
+
+	const form = new FormData();
+	form.append("prompt", prompt);
+	form.append("width", "1024");
+	form.append("height", "1024");
+
+	// Wrap FormData in a Request so we can grab a properly-formed multipart body + content-type
+	const formRequest = new Request("http://dummy", { method: "POST", body: form });
+	const formStream = formRequest.body;
+	const formContentType =
+		formRequest.headers.get("content-type") ?? "multipart/form-data";
+
+	const started = Date.now();
+	const resp = (await c.env.AI.run("@cf/black-forest-labs/flux-2-klein-4b", {
+		multipart: {
+			body: formStream as ReadableStream,
+			contentType: formContentType,
+		},
+	})) as { image?: string } | unknown;
+	const elapsedMs = Date.now() - started;
+
+	// FLUX.2 returns { image: "<base64 string>" }
+	if (!resp || typeof resp !== "object" || !("image" in resp) || typeof resp.image !== "string") {
+		return c.json(
+			{ error: "unexpected AI response shape", got: resp, elapsedMs },
+			500,
+		);
+	}
+
+	const bytes = Uint8Array.from(atob(resp.image), (ch) => ch.charCodeAt(0));
+
+	// FLUX.2 actually returns JPEG bytes. Sniff the magic number to set the right content-type.
+	const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+	const isPng =
+		bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+	const contentType = isJpeg
+		? "image/jpeg"
+		: isPng
+			? "image/png"
+			: "application/octet-stream";
+
+	return new Response(bytes, {
+		headers: {
+			"content-type": contentType,
+			"content-length": String(bytes.byteLength),
+			"x-elapsed-ms": String(elapsedMs),
+			"x-prompt": prompt,
+		},
+	});
 });
 
 /**

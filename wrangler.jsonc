@@ -28,6 +28,9 @@
 			"id": "eb40539962954422a9b409c91b1ee2f9"
 		}
 	],
+	"ai": {
+		"binding": "AI"
+	},
 	"observability": {
 		"enabled": true
 	}
