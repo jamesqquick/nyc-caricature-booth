@@ -83,6 +83,45 @@ async function loadScenes(env: Env): Promise<Scene[]> {
 	return JSON.parse(raw) as Scene[];
 }
 
+// ----- Postcard dimensions (4x6 inches @ 300 DPI, landscape) -----
+const POSTCARD_W = 1800;
+const POSTCARD_H = 1200;
+// Watermark sized as a fraction of the postcard width
+const POSTCARD_WATERMARK_W = 540; // ~30% of postcard width
+const POSTCARD_WATERMARK_MARGIN = 56;
+
+/**
+ * Builds a print-ready 1800x1200 postcard JPEG from any base image:
+ *  - resizes/crops the base image to fill 1800x1200 (fit: cover)
+ *  - composites the "I [logo] NY" watermark in the bottom-right corner
+ *
+ * Returns the Response from Cloudflare Images binding directly.
+ */
+async function buildPostcard(
+	env: Env,
+	baseStream: ReadableStream,
+): Promise<Response> {
+	const wmReq = new Request("http://internal/watermark.png");
+	const wmResp = await env.ASSETS.fetch(wmReq);
+	if (!wmResp.ok || !wmResp.body) {
+		throw new Error("watermark asset not available");
+	}
+
+	const result = await env.IMAGES.input(baseStream)
+		.transform({ width: POSTCARD_W, height: POSTCARD_H, fit: "cover" })
+		.draw(
+			env.IMAGES.input(wmResp.body).transform({ width: POSTCARD_WATERMARK_W }),
+			{
+				bottom: POSTCARD_WATERMARK_MARGIN,
+				right: POSTCARD_WATERMARK_MARGIN,
+				opacity: 0.95,
+			},
+		)
+		.output({ format: "image/jpeg" });
+
+	return result.response();
+}
+
 type ModerationVerdict = {
 	safe: boolean;
 	reasons: string[];
@@ -241,14 +280,17 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 3.1 &middot; Watermark composition
+					Step 3.2 &middot; Postcard format
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/test-watermark" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						🏷️ Test watermark overlay →
+					<a href="/test-postcard" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						📮 Test 4×6 postcard format →
+					</a>
+					<a href="/test-watermark" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						🏷️ Watermark overlay only
 					</a>
 					<a href="/test-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						🛡️ Test content moderation
+						🛡️ Content moderation
 					</a>
 					<a href="/test-scene-grid" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						🎬 Generate all 6 scenes from one selfie
@@ -266,7 +308,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "3.1" });
+	return c.json({ status: "ok", step: "3.2" });
 });
 
 /**
@@ -801,6 +843,91 @@ app.post("/api/test-watermark", async (c) => {
 		return response;
 	} catch (err) {
 		return c.json({ error: "watermark composition failed", details: String(err) }, 500);
+	}
+});
+
+/**
+ * Renders the postcard test form.
+ * GET /test-postcard
+ */
+app.get("/test-postcard", (c) => {
+	return c.html(
+		page(
+			"Postcard format — Step 3.2",
+			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
+				<h1 class="text-3xl font-bold mb-2">Postcard format</h1>
+				<p class="text-white/60 mb-8 max-w-xl text-center">
+					Upload any image. We'll fit it to a 4×6 landscape postcard at 300 DPI
+					(1800×1200), composite the "I 🧡 NY" watermark in the bottom-right, and
+					return a print-ready JPEG.
+				</p>
+				<form id="pc-form" action="/api/test-postcard" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
+					<div>
+						<label class="block text-sm font-medium mb-2">Base image (typically a caricature)</label>
+						<input id="pc-img" type="file" name="image" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
+					</div>
+					<button id="pc-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
+						<span data-label="idle">Build postcard</span>
+						<span data-label="loading" class="hidden items-center gap-2">
+							<svg class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+								<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="3" />
+								<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+							</svg>
+							<span>Compositing…</span>
+						</span>
+					</button>
+					<p class="text-xs text-white/40">Output: 1800×1200 JPEG. Square inputs get cropped top/bottom to fit landscape.</p>
+				</form>
+				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
+				<script>
+					(function () {
+						const form = document.getElementById("pc-form");
+						const button = document.getElementById("pc-submit");
+						const idle = button.querySelector('[data-label="idle"]');
+						const loading = button.querySelector('[data-label="loading"]');
+						function setLoading(on) {
+							button.disabled = on;
+							form.style.pointerEvents = on ? "none" : "";
+							form.style.opacity = on ? "0.85" : "";
+							idle.classList.toggle("hidden", on);
+							loading.classList.toggle("hidden", !on);
+							loading.classList.toggle("inline-flex", on);
+						}
+						form.addEventListener("submit", function () { setLoading(true); });
+						window.addEventListener("pageshow", function (e) { if (e.persisted) setLoading(false); });
+					})();
+				</script>
+			</main>`,
+		),
+	);
+});
+
+/**
+ * Builds a print-ready 1800x1200 (4x6 @ 300 DPI) JPEG postcard from an uploaded image.
+ * Includes watermark composition.
+ * POST /api/test-postcard  (multipart: image=file)
+ */
+app.post("/api/test-postcard", async (c) => {
+	let inForm: FormData;
+	try {
+		inForm = await c.req.formData();
+	} catch (err) {
+		return c.json({ error: "expected multipart/form-data with 'image'", details: String(err) }, 400);
+	}
+	const image = inForm.get("image");
+	if (!(image instanceof File) || image.size === 0) {
+		return c.json({ error: "missing image file" }, 400);
+	}
+
+	const started = Date.now();
+	try {
+		const response = await buildPostcard(c.env, image.stream());
+		const elapsedMs = Date.now() - started;
+		response.headers.set("x-elapsed-ms", String(elapsedMs));
+		response.headers.set("x-postcard-dimensions", `${POSTCARD_W}x${POSTCARD_H}`);
+		return response;
+	} catch (err) {
+		return c.json({ error: "postcard build failed", details: String(err) }, 500);
 	}
 });
 
