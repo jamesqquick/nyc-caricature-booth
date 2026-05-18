@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import QRCode from "qrcode";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -89,17 +90,175 @@ const POSTCARD_H = 1200;
 // Watermark sized as a fraction of the postcard width
 const POSTCARD_WATERMARK_W = 540; // ~30% of postcard width
 const POSTCARD_WATERMARK_MARGIN = 56;
+// QR code sized for easy phone scanning at arm's length
+const POSTCARD_QR_W = 220;
+const POSTCARD_QR_MARGIN = 56;
+
+/**
+ * Generates a short, URL-safe ID for a postcard (digital pickup URL).
+ * 10 chars of base32, ~50 bits of entropy.
+ */
+function newPostcardId(): string {
+	const bytes = new Uint8Array(8);
+	crypto.getRandomValues(bytes);
+	const alphabet = "abcdefghijkmnpqrstuvwxyz23456789"; // Crockford-ish, no 0/1/l/o
+	let s = "";
+	for (let i = 0; i < bytes.length; i++) {
+		s += alphabet[bytes[i] % alphabet.length];
+		if (s.length >= 10) break;
+	}
+	return s.slice(0, 10);
+}
+
+/**
+ * Encodes a Uint8Array as a PNG file. Minimal "raw RGBA" encoder, no deflate
+ * (uses zlib's stored/uncompressed blocks). Worker-safe — pure JS.
+ */
+function encodePng(width: number, height: number, rgba: Uint8Array): Uint8Array {
+	const crcTable = (() => {
+		const t = new Uint32Array(256);
+		for (let n = 0; n < 256; n++) {
+			let c = n;
+			for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+			t[n] = c >>> 0;
+		}
+		return t;
+	})();
+	function crc32(buf: Uint8Array): number {
+		let c = 0xffffffff;
+		for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+		return (c ^ 0xffffffff) >>> 0;
+	}
+	function adler32(buf: Uint8Array): number {
+		let a = 1;
+		let b = 0;
+		for (let i = 0; i < buf.length; i++) {
+			a = (a + buf[i]) % 65521;
+			b = (b + a) % 65521;
+		}
+		return ((b << 16) | a) >>> 0;
+	}
+	function chunk(type: string, data: Uint8Array): Uint8Array {
+		const out = new Uint8Array(8 + data.length + 4);
+		const dv = new DataView(out.buffer);
+		dv.setUint32(0, data.length);
+		for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+		out.set(data, 8);
+		const crcInput = new Uint8Array(4 + data.length);
+		for (let i = 0; i < 4; i++) crcInput[i] = type.charCodeAt(i);
+		crcInput.set(data, 4);
+		dv.setUint32(8 + data.length, crc32(crcInput));
+		return out;
+	}
+
+	// Build raw scanlines: each row prefixed with filter byte 0x00
+	const stride = width * 4;
+	const raw = new Uint8Array((stride + 1) * height);
+	for (let y = 0; y < height; y++) {
+		raw[(stride + 1) * y] = 0;
+		raw.set(rgba.subarray(y * stride, (y + 1) * stride), (stride + 1) * y + 1);
+	}
+
+	// zlib container with one uncompressed deflate block per chunk of <=65535 bytes
+	const blocks: number[] = [0x78, 0x01]; // zlib header (no compression, default window)
+	let pos = 0;
+	while (pos < raw.length) {
+		const len = Math.min(65535, raw.length - pos);
+		const last = pos + len === raw.length ? 1 : 0;
+		blocks.push(last); // BFINAL only, BTYPE=00 (stored)
+		blocks.push(len & 0xff, (len >> 8) & 0xff);
+		const nlen = ~len & 0xffff;
+		blocks.push(nlen & 0xff, (nlen >> 8) & 0xff);
+		for (let i = 0; i < len; i++) blocks.push(raw[pos + i]);
+		pos += len;
+	}
+	const adler = adler32(raw);
+	blocks.push((adler >>> 24) & 0xff, (adler >>> 16) & 0xff, (adler >>> 8) & 0xff, adler & 0xff);
+	const idat = new Uint8Array(blocks);
+
+	const ihdr = new Uint8Array(13);
+	const dv = new DataView(ihdr.buffer);
+	dv.setUint32(0, width);
+	dv.setUint32(4, height);
+	ihdr[8] = 8; // bit depth
+	ihdr[9] = 6; // color type RGBA
+	ihdr[10] = 0; // compression
+	ihdr[11] = 0; // filter
+	ihdr[12] = 0; // interlace
+
+	const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+	const ihdrChunk = chunk("IHDR", ihdr);
+	const idatChunk = chunk("IDAT", idat);
+	const iendChunk = chunk("IEND", new Uint8Array(0));
+
+	const total = sig.length + ihdrChunk.length + idatChunk.length + iendChunk.length;
+	const out = new Uint8Array(total);
+	let o = 0;
+	out.set(sig, o);
+	o += sig.length;
+	out.set(ihdrChunk, o);
+	o += ihdrChunk.length;
+	out.set(idatChunk, o);
+	o += idatChunk.length;
+	out.set(iendChunk, o);
+	return out;
+}
+
+/**
+ * Generates a QR code rasterized as a PNG of `sizePx` x `sizePx`.
+ * Uses the qrcode package's matrix output (Worker-safe) and our pure-JS PNG
+ * encoder above. Black on white, no quiet-zone margin (we add it via `margin`).
+ */
+function qrPng(text: string, sizePx: number): Uint8Array {
+	const qr = QRCode.create(text, { errorCorrectionLevel: "M" });
+	const modules = qr.modules;
+	const moduleSide = modules.size;
+	const quietMargin = 2; // modules of white border
+	const grid = moduleSide + quietMargin * 2;
+	const scale = Math.max(1, Math.floor(sizePx / grid));
+	const finalSide = grid * scale;
+
+	const rgba = new Uint8Array(finalSide * finalSide * 4);
+	// Fill with white
+	for (let i = 0; i < rgba.length; i += 4) {
+		rgba[i] = 255;
+		rgba[i + 1] = 255;
+		rgba[i + 2] = 255;
+		rgba[i + 3] = 255;
+	}
+
+	for (let y = 0; y < moduleSide; y++) {
+		for (let x = 0; x < moduleSide; x++) {
+			if (!modules.get(x, y)) continue;
+			const px0 = (x + quietMargin) * scale;
+			const py0 = (y + quietMargin) * scale;
+			for (let dy = 0; dy < scale; dy++) {
+				for (let dx = 0; dx < scale; dx++) {
+					const off = ((py0 + dy) * finalSide + (px0 + dx)) * 4;
+					rgba[off] = 0;
+					rgba[off + 1] = 0;
+					rgba[off + 2] = 0;
+					rgba[off + 3] = 255;
+				}
+			}
+		}
+	}
+
+	return encodePng(finalSide, finalSide, rgba);
+}
 
 /**
  * Builds a print-ready 1800x1200 postcard JPEG from any base image:
  *  - resizes/crops the base image to fill 1800x1200 (fit: cover)
  *  - composites the "I [logo] NY" watermark in the bottom-right corner
+ *  - optionally composites a QR code in the bottom-left corner
  *
  * Returns the Response from Cloudflare Images binding directly.
  */
 async function buildPostcard(
 	env: Env,
 	baseStream: ReadableStream,
+	opts: { qrUrl?: string } = {},
 ): Promise<Response> {
 	const wmReq = new Request("http://internal/watermark.png");
 	const wmResp = await env.ASSETS.fetch(wmReq);
@@ -107,18 +266,39 @@ async function buildPostcard(
 		throw new Error("watermark asset not available");
 	}
 
-	const result = await env.IMAGES.input(baseStream)
-		.transform({ width: POSTCARD_W, height: POSTCARD_H, fit: "cover" })
-		.draw(
-			env.IMAGES.input(wmResp.body).transform({ width: POSTCARD_WATERMARK_W }),
-			{
-				bottom: POSTCARD_WATERMARK_MARGIN,
-				right: POSTCARD_WATERMARK_MARGIN,
-				opacity: 0.95,
-			},
-		)
-		.output({ format: "image/jpeg" });
+	let pipeline = env.IMAGES.input(baseStream).transform({
+		width: POSTCARD_W,
+		height: POSTCARD_H,
+		fit: "cover",
+	});
 
+	if (opts.qrUrl) {
+		const png = qrPng(opts.qrUrl, POSTCARD_QR_W);
+		const qrStream = new Response(png, {
+			headers: { "content-type": "image/png" },
+		}).body;
+		if (qrStream) {
+			pipeline = pipeline.draw(
+				env.IMAGES.input(qrStream).transform({ width: POSTCARD_QR_W }),
+				{
+					bottom: POSTCARD_QR_MARGIN,
+					left: POSTCARD_QR_MARGIN,
+					opacity: 1,
+				},
+			);
+		}
+	}
+
+	pipeline = pipeline.draw(
+		env.IMAGES.input(wmResp.body).transform({ width: POSTCARD_WATERMARK_W }),
+		{
+			bottom: POSTCARD_WATERMARK_MARGIN,
+			right: POSTCARD_WATERMARK_MARGIN,
+			opacity: 0.95,
+		},
+	);
+
+	const result = await pipeline.output({ format: "image/jpeg" });
 	return result.response();
 }
 
@@ -280,7 +460,7 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 3.2 &middot; Postcard format
+					Step 3.3 &middot; QR codes on postcards
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/test-postcard" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
@@ -308,7 +488,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "3.2" });
+	return c.json({ status: "ok", step: "3.3" });
 });
 
 /**
@@ -853,19 +1033,23 @@ app.post("/api/test-watermark", async (c) => {
 app.get("/test-postcard", (c) => {
 	return c.html(
 		page(
-			"Postcard format — Step 3.2",
+			"Postcard format — Step 3.3",
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Postcard format</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
 					Upload any image. We'll fit it to a 4×6 landscape postcard at 300 DPI
-					(1800×1200), composite the "I 🧡 NY" watermark in the bottom-right, and
-					return a print-ready JPEG.
+					(1800×1200), composite the "I 🧡 NY" watermark in the bottom-right,
+					and (optionally) add a QR code in the bottom-left.
 				</p>
 				<form id="pc-form" action="/api/test-postcard" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
 					<div>
 						<label class="block text-sm font-medium mb-2">Base image (typically a caricature)</label>
 						<input id="pc-img" type="file" name="image" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
 					</div>
+					<label class="flex items-center gap-3 cursor-pointer">
+						<input type="checkbox" name="include_qr" checked class="size-5 rounded border-white/30 bg-black/40 accent-cf-orange" />
+						<span class="text-sm">Include QR code (links to <code>/p/&lt;id&gt;</code>)</span>
+					</label>
 					<button id="pc-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
 						<span data-label="idle">Build postcard</span>
 						<span data-label="loading" class="hidden items-center gap-2">
@@ -876,7 +1060,7 @@ app.get("/test-postcard", (c) => {
 							<span>Compositing…</span>
 						</span>
 					</button>
-					<p class="text-xs text-white/40">Output: 1800×1200 JPEG. Square inputs get cropped top/bottom to fit landscape.</p>
+					<p class="text-xs text-white/40">Output: 1800×1200 JPEG. Square inputs get cropped top/bottom to fit landscape. Check the response headers for the postcard ID + URL.</p>
 				</form>
 				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
 				<script>
@@ -919,16 +1103,55 @@ app.post("/api/test-postcard", async (c) => {
 		return c.json({ error: "missing image file" }, 400);
 	}
 
+	const includeQr = inForm.get("include_qr") === "on";
+	const postcardId = includeQr ? newPostcardId() : undefined;
+	const qrUrl = postcardId ? `${new URL(c.req.url).origin}/p/${postcardId}` : undefined;
+
 	const started = Date.now();
 	try {
-		const response = await buildPostcard(c.env, image.stream());
+		const response = await buildPostcard(c.env, image.stream(), { qrUrl });
 		const elapsedMs = Date.now() - started;
 		response.headers.set("x-elapsed-ms", String(elapsedMs));
 		response.headers.set("x-postcard-dimensions", `${POSTCARD_W}x${POSTCARD_H}`);
+		if (postcardId) {
+			response.headers.set("x-postcard-id", postcardId);
+			response.headers.set("x-postcard-url", qrUrl!);
+		}
 		return response;
 	} catch (err) {
 		return c.json({ error: "postcard build failed", details: String(err) }, 500);
 	}
+});
+
+/**
+ * Placeholder digital-pickup landing page for a postcard.
+ * GET /p/:id
+ * In a later step this will fetch the real caricature from R2 and offer
+ * email opt-in. For now it just confirms QR scanning works end-to-end.
+ */
+app.get("/p/:id", (c) => {
+	const id = c.req.param("id");
+	if (!/^[a-z2-9]{6,16}$/.test(id)) return c.notFound();
+	return c.html(
+		page(
+			`Your postcard — ${id}`,
+			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
+				<div class="text-center max-w-md">
+					<img src="/cloudflare-logo.png" alt="" class="mx-auto h-16 w-auto mb-6 drop-shadow-[0_0_24px_rgba(246,130,31,0.5)]" />
+					<h1 class="text-3xl font-bold">You scanned a postcard!</h1>
+					<p class="text-white/60 mt-3">Postcard ID: <code class="text-cf-orange">${id}</code></p>
+					<p class="text-white/60 mt-6">
+						This is a placeholder. In the full booth, this page will let you
+						download a high-resolution digital copy and optionally drop your
+						email to get a copy sent.
+					</p>
+					<a href="/" class="mt-10 inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+						See what we built
+					</a>
+				</div>
+			</main>`,
+		),
+	);
 });
 
 /**
