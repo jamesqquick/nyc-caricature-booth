@@ -83,6 +83,128 @@ async function loadScenes(env: Env): Promise<Scene[]> {
 	return JSON.parse(raw) as Scene[];
 }
 
+type ModerationVerdict = {
+	safe: boolean;
+	reasons: string[];
+	raw: string;
+	elapsedMs: number;
+};
+
+const MODERATION_SYSTEM_PROMPT = `You are a strict content moderation system for a public photo booth at a corporate event.
+Examine the provided image and decide whether it is SAFE to use as the input photo for an AI caricature generator that will be printed as a postcard and displayed on a public screen.
+
+Flag the image as UNSAFE if it contains any of:
+- nudity, sexual content, or sexualized minors
+- explicit violence, gore, or weapons aimed at people
+- hate symbols or extremist imagery
+- illegal drug use
+- offensive gestures or profanity visible in the image
+- celebrity impersonation or copyrighted characters as the primary subject
+- text overtly promoting violence, hate, or harassment
+
+A normal selfie of one or more adults (smiling, neutral, silly faces, casual clothes) is SAFE.
+Slightly blurry photos, group photos, hats/sunglasses, and unusual angles are SAFE.
+
+Respond with ONLY a single line of JSON, no markdown fences, no commentary, in this exact shape:
+{"safe": true} or {"safe": false, "reasons": ["short reason 1", "short reason 2"]}`;
+
+/**
+ * Llama 3.2 Vision requires a one-time per-account license-acceptance prompt
+ * ("agree") before it can be used. This sends that handshake.
+ * The model paradoxically returns the success message as an AiError; we
+ * swallow it because the side effect (license accepted) is what we want.
+ */
+async function acceptLlamaVisionLicense(ai: Ai): Promise<void> {
+	try {
+		await ai.run("@cf/meta/llama-3.2-11b-vision-instruct", {
+			prompt: "agree",
+		});
+	} catch (err) {
+		const msg = String(err);
+		if (msg.includes("Thank you for agreeing")) return;
+		throw err;
+	}
+}
+
+async function moderateImage(
+	ai: Ai,
+	imageBytes: Uint8Array,
+): Promise<ModerationVerdict> {
+	const started = Date.now();
+
+	// Convert bytes -> array of numbers as the vision model expects (per Workers AI binding)
+	const imageArray = Array.from(imageBytes);
+
+	async function callModel() {
+		return (await ai.run("@cf/meta/llama-3.2-11b-vision-instruct", {
+			messages: [
+				{ role: "system", content: MODERATION_SYSTEM_PROMPT },
+				{
+					role: "user",
+					content: "Is this image safe? Reply with the JSON verdict.",
+				},
+			],
+			image: imageArray,
+			max_tokens: 256,
+		})) as { response?: string } | unknown;
+	}
+
+	let resp: unknown;
+	try {
+		resp = await callModel();
+	} catch (err) {
+		const msg = String(err);
+		// One-time license acceptance handshake then retry.
+		if (msg.includes("5016") && msg.toLowerCase().includes("agree")) {
+			await acceptLlamaVisionLicense(ai);
+			resp = await callModel();
+		} else {
+			throw err;
+		}
+	}
+	const elapsedMs = Date.now() - started;
+
+	// The model response can be one of:
+	//   { response: { safe: true } }                — already-parsed JSON object
+	//   { response: { safe: false, reasons: [..] } }
+	//   { response: "<string that may contain JSON>" }
+	// We normalize all three.
+	const raw = JSON.stringify(resp);
+	let safe = false;
+	let reasons: string[] = [];
+	let parsedFromString = false;
+
+	if (resp && typeof resp === "object" && "response" in resp) {
+		const r = (resp as { response: unknown }).response;
+		if (r && typeof r === "object") {
+			const obj = r as { safe?: unknown; reasons?: unknown };
+			safe = obj.safe === true;
+			if (Array.isArray(obj.reasons)) reasons = obj.reasons.map(String);
+			parsedFromString = true;
+		} else if (typeof r === "string") {
+			const match = r.match(/\{[\s\S]*?\}/);
+			if (match) {
+				try {
+					const obj = JSON.parse(match[0]) as { safe?: unknown; reasons?: unknown };
+					safe = obj.safe === true;
+					if (Array.isArray(obj.reasons)) reasons = obj.reasons.map(String);
+					parsedFromString = true;
+				} catch {
+					// fall through
+				}
+			}
+		}
+	}
+
+	if (!parsedFromString) {
+		reasons = ["could not parse verdict — failing closed"];
+	} else if (!safe && reasons.length === 0) {
+		reasons = ["model returned safe=false with no reasons"];
+	}
+
+	return { safe, reasons, raw, elapsedMs };
+}
+
 const page = (title: string, body: string) => `<!doctype html>
 <html lang="en">
 	<head>
@@ -119,11 +241,14 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 2.3 &middot; Scene prompt spike
+					Step 2.4 &middot; Content moderation
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/test-scene-grid" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						🎬 Generate all 6 scenes from one selfie →
+					<a href="/test-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						🛡️ Test content moderation →
+					</a>
+					<a href="/test-scene-grid" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						🎬 Generate all 6 scenes from one selfie
 					</a>
 					<a href="/test-i2i" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						🪄 Single-scene caricature test
@@ -138,7 +263,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "2.3" });
+	return c.json({ status: "ok", step: "2.4" });
 });
 
 /**
@@ -221,7 +346,12 @@ app.get("/test-i2i", (c) => {
  * POST /api/test-i2i  (multipart: selfie=file, scene_id=string)
  */
 app.post("/api/test-i2i", async (c) => {
-	const inForm = await c.req.formData();
+	let inForm: FormData;
+	try {
+		inForm = await c.req.formData();
+	} catch (err) {
+		return c.json({ error: "expected multipart/form-data with 'selfie'", details: String(err) }, 400);
+	}
 	const selfie = inForm.get("selfie");
 	const sceneId = String(inForm.get("scene_id") ?? "hot-dog-stand");
 
@@ -321,7 +451,12 @@ app.get("/test-scene-grid", (c) => {
  * POST /api/test-scene-grid  (multipart: selfie=file)
  */
 app.post("/api/test-scene-grid", async (c) => {
-	const inForm = await c.req.formData();
+	let inForm: FormData;
+	try {
+		inForm = await c.req.formData();
+	} catch (err) {
+		return c.json({ error: "expected multipart/form-data with 'selfie'", details: String(err) }, 400);
+	}
 	const selfie = inForm.get("selfie");
 	if (!(selfie instanceof File) || selfie.size === 0) {
 		return c.json({ error: "missing selfie file" }, 400);
@@ -472,6 +607,93 @@ app.get("/api/scene-grid-img", async (c) => {
 			"cache-control": "public, max-age=3600",
 		},
 	});
+});
+
+/**
+ * Renders the moderation test form.
+ * GET /test-moderate
+ */
+app.get("/test-moderate", (c) => {
+	return c.html(
+		page(
+			"Moderation test — Step 2.4",
+			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
+				<h1 class="text-3xl font-bold mb-2">Moderation test</h1>
+				<p class="text-white/60 mb-8 max-w-xl text-center">
+					Upload any image. We'll run it through Llama 3.2 Vision and return a JSON safety verdict.
+				</p>
+				<form id="mod-form" action="/api/test-moderate" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
+					<div>
+						<label class="block text-sm font-medium mb-2">Image</label>
+						<input id="mod-img" type="file" name="image" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
+					</div>
+					<button id="mod-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
+						<span data-label="idle">Run moderation</span>
+						<span data-label="loading" class="hidden items-center gap-2">
+							<svg class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+								<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="3" />
+								<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+							</svg>
+							<span>Checking…</span>
+						</span>
+					</button>
+				</form>
+				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
+				<script>
+					(function () {
+						const form = document.getElementById("mod-form");
+						const button = document.getElementById("mod-submit");
+						const idle = button.querySelector('[data-label="idle"]');
+						const loading = button.querySelector('[data-label="loading"]');
+						function setLoading(on) {
+							button.disabled = on;
+							form.style.pointerEvents = on ? "none" : "";
+							form.style.opacity = on ? "0.85" : "";
+							idle.classList.toggle("hidden", on);
+							loading.classList.toggle("hidden", !on);
+							loading.classList.toggle("inline-flex", on);
+						}
+						form.addEventListener("submit", function () { setLoading(true); });
+						window.addEventListener("pageshow", function (e) { if (e.persisted) setLoading(false); });
+					})();
+				</script>
+			</main>`,
+		),
+	);
+});
+
+/**
+ * Runs llama-3.2-11b-vision-instruct on an uploaded image and returns a safety verdict.
+ * POST /api/test-moderate  (multipart: image=file)
+ */
+app.post("/api/test-moderate", async (c) => {
+	let inForm: FormData;
+	try {
+		inForm = await c.req.formData();
+	} catch (err) {
+		return c.json({ error: "expected multipart/form-data with 'image'", details: String(err) }, 400);
+	}
+	const image = inForm.get("image");
+	if (!(image instanceof File) || image.size === 0) {
+		return c.json({ error: "missing image file" }, 400);
+	}
+
+	const buf = await image.arrayBuffer();
+	const bytes = new Uint8Array(buf);
+
+	try {
+		const verdict = await moderateImage(c.env.AI, bytes);
+		return c.json(
+			{
+				ok: true,
+				image: { name: image.name, type: image.type, size: bytes.byteLength },
+				verdict,
+			},
+			verdict.safe ? 200 : 200, // always 200; the verdict carries the signal
+		);
+	} catch (err) {
+		return c.json({ error: String(err) }, 500);
+	}
 });
 
 /**
