@@ -100,7 +100,6 @@ app.get("/test-i2i", (c) => {
 					(function () {
 						const form = document.getElementById("i2i-form");
 						const button = document.getElementById("i2i-submit");
-						const selfie = document.getElementById("i2i-selfie");
 						const scene = document.getElementById("i2i-scene");
 						const idleLabel = button.querySelector('[data-label="idle"]');
 						const loadingLabel = button.querySelector('[data-label="loading"]');
@@ -109,9 +108,13 @@ app.get("/test-i2i", (c) => {
 						let tickHandle = null;
 
 						function setLoading(on) {
+							// IMPORTANT: do not disable the file input. A disabled file input
+							// is excluded from form submission, which causes the server to see
+							// no selfie file. Visually lock the form with pointer-events instead.
 							button.disabled = on;
-							selfie.disabled = on;
 							scene.disabled = on;
+							form.style.pointerEvents = on ? "none" : "";
+							form.style.opacity = on ? "0.85" : "";
 							idleLabel.classList.toggle("hidden", on);
 							loadingLabel.classList.toggle("hidden", !on);
 							loadingLabel.classList.toggle("inline-flex", on);
