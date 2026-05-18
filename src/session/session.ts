@@ -6,9 +6,9 @@
  *
  * Phase 5 buildup:
  *   - 5.1: bare DO with permissive setStatus.
- *   - 5.2 (this commit): validated state machine + per-step payloads + self-
- *     delete alarm.
- *   - 5.3: WebSocket fan-out so iPad/phone can subscribe live.
+ *   - 5.2: validated state machine + per-step payloads + self-delete alarm.
+ *   - 5.3 (this commit): WebSocket fan-out so iPad/phone can subscribe live.
+ *     Uses the Hibernation API so idle sessions don't keep the DO in memory.
  *   - 5.4: workflow drives state changes from each step.
  *
  * State machine (strict):
@@ -100,7 +100,91 @@ export class InvalidTransitionError extends Error {
 
 const TERMINAL: ReadonlySet<SessionStatus> = new Set(["done", "errored"]);
 
+/**
+ * Message shape pushed to connected WebSocket clients.
+ */
+export type SessionWsMessage =
+	| { type: "state"; state: SessionState }
+	| { type: "deleted"; sessionId: string };
+
 export class SessionDO extends DurableObject<Env> {
+	/**
+	 * Handles the WebSocket upgrade request proxied from the Worker.
+	 * Path-agnostic: any GET with Upgrade: websocket is accepted.
+	 */
+	override async fetch(request: Request): Promise<Response> {
+		const upgrade = request.headers.get("Upgrade");
+		if (upgrade !== "websocket") {
+			return new Response("Expected WebSocket upgrade", { status: 426 });
+		}
+
+		const pair = new WebSocketPair();
+		const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+
+		// Accept via hibernation API so the DO can be evicted between events
+		// while connections stay open. webSocketMessage / webSocketClose are
+		// the inbound handlers below.
+		this.ctx.acceptWebSocket(server);
+
+		// Send the current state immediately so the client has something to
+		// render on connect (avoid an extra HTTP round-trip).
+		try {
+			const state = await this.ensureState();
+			server.send(JSON.stringify({ type: "state", state }));
+		} catch (err) {
+			console.error("[SessionDO] failed to send initial state:", err);
+		}
+
+		return new Response(null, { status: 101, webSocket: client });
+	}
+
+	/**
+	 * Inbound message handler. Currently we only support a tiny RPC:
+	 *   - "ping" → "pong"
+	 *   - "get-state" → emits a fresh state frame to this socket
+	 * Anything else is ignored (we don't expect clients to drive state).
+	 */
+	async webSocketMessage(
+		ws: WebSocket,
+		message: ArrayBuffer | string,
+	): Promise<void> {
+		const text =
+			typeof message === "string"
+				? message
+				: new TextDecoder().decode(message);
+		const trimmed = text.trim();
+		if (trimmed === "ping") {
+			ws.send("pong");
+			return;
+		}
+		if (trimmed === "get-state") {
+			const state = await this.ensureState();
+			ws.send(JSON.stringify({ type: "state", state }));
+			return;
+		}
+	}
+
+	/**
+	 * Close handler. The runtime's web_socket_auto_reply_to_close handles
+	 * the close frame for us under compat dates >= 2026-04-07, but we leave
+	 * a defensive close() in place anyway.
+	 */
+	async webSocketClose(
+		ws: WebSocket,
+		code: number,
+		reason: string,
+	): Promise<void> {
+		try {
+			ws.close(code, reason);
+		} catch {
+			// already closed
+		}
+	}
+
+	async webSocketError(_ws: WebSocket, error: unknown): Promise<void> {
+		console.error("[SessionDO] websocket error:", error);
+	}
+
 	/**
 	 * Returns current state. Initializes a queued row on first access so
 	 * callers don't have to mark a step before reading.
@@ -152,6 +236,8 @@ export class SessionDO extends DurableObject<Env> {
 
 		await this.ctx.storage.put(STATE_KEY, merged);
 
+		this.broadcast({ type: "state", state: merged });
+
 		if (TERMINAL.has(next)) {
 			await this.scheduleSelfDelete();
 		}
@@ -165,8 +251,12 @@ export class SessionDO extends DurableObject<Env> {
 	 * wait for the grace window; the test endpoints expose it for debugging.
 	 */
 	async delete(): Promise<void> {
+		const existing = await this.ctx.storage.get<SessionState>(STATE_KEY);
+		const sessionId = existing?.sessionId ?? "(unset)";
 		await this.ctx.storage.deleteAlarm();
 		await this.ctx.storage.deleteAll();
+		this.broadcast({ type: "deleted", sessionId });
+		this.closeAllSockets(1000, "session deleted");
 	}
 
 	/**
@@ -174,7 +264,34 @@ export class SessionDO extends DurableObject<Env> {
 	 * runtime shortly after.
 	 */
 	async alarm(): Promise<void> {
+		const existing = await this.ctx.storage.get<SessionState>(STATE_KEY);
+		const sessionId = existing?.sessionId ?? "(unset)";
 		await this.ctx.storage.deleteAll();
+		this.broadcast({ type: "deleted", sessionId });
+		this.closeAllSockets(1000, "session expired");
+	}
+
+	// -------- ws helpers --------
+
+	private broadcast(msg: SessionWsMessage): void {
+		const payload = JSON.stringify(msg);
+		for (const ws of this.ctx.getWebSockets()) {
+			try {
+				ws.send(payload);
+			} catch (err) {
+				console.error("[SessionDO] broadcast send failed:", err);
+			}
+		}
+	}
+
+	private closeAllSockets(code: number, reason: string): void {
+		for (const ws of this.ctx.getWebSockets()) {
+			try {
+				ws.close(code, reason);
+			} catch {
+				// already closed
+			}
+		}
 	}
 
 	// -------- internals --------

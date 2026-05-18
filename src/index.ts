@@ -57,11 +57,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 5.2 &middot; Session DO state machine
+					Step 5.3 &middot; Session DO WebSockets
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/test-session" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						🪪 Session DO state machine (step 5.2) →
+						🪪 Session DO + live WebSocket (step 5.3) →
 					</a>
 					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚡ Full workflow pipeline (selfie + scene → postcard)
@@ -94,7 +94,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "5.2" });
+	return c.json({ status: "ok", step: "5.3" });
 });
 
 /**
@@ -302,6 +302,24 @@ app.delete("/api/test-session/:id", async (c) => {
 });
 
 /**
+ * WebSocket endpoint: upgrade request is proxied to the SessionDO which
+ * accepts it via the Hibernation API. The DO sends a `state` frame on
+ * connect and broadcasts a new `state` (or `deleted`) frame on every change.
+ *
+ * GET /api/session/:id/ws  (with Upgrade: websocket)
+ */
+app.get("/api/session/:id/ws", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
+	if (c.req.header("Upgrade") !== "websocket") {
+		return c.json({ error: "expected websocket upgrade" }, 426);
+	}
+	const stub = getSessionStub(c.env, id);
+	// Pass the raw request through so the DO sees the Upgrade headers.
+	return stub.fetch(c.req.raw);
+});
+
+/**
  * Manual driver page for the SessionDO (step 5.2).
  * Click to create a session, then use the status form to drive its state.
  * GET /test-session       — landing / create
@@ -310,13 +328,13 @@ app.delete("/api/test-session/:id", async (c) => {
 app.get("/test-session", (c) => {
 	return c.html(
 		page(
-			"Session DO — Step 5.2",
+			"Session DO — Step 5.3",
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Session Durable Object</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
-					One DO per caricature session. Step 5.2 adds a validated state machine
-					(queued → moderating → generating → compositing → done; any → errored)
-					and self-deletes 5 minutes after reaching a terminal state.
+					One DO per caricature session with live WebSocket fan-out. Step 5.3
+					adds the <code>/ws</code> endpoint (hibernation API) — open the same
+					session in two tabs to watch one push updates to the other in real time.
 				</p>
 				<form id="new-session" action="/api/test-session" method="post" class="w-full max-w-md bg-white/5 rounded-2xl p-8 border border-white/10">
 					<button type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">
@@ -351,9 +369,15 @@ app.get("/test-session/:id", (c) => {
 				<p class="text-white/60 text-sm">Session: <code class="text-white/80">${id}</code></p>
 
 				<section class="w-full mt-8 rounded-2xl bg-white/5 border border-white/10 p-6">
-					<h2 class="text-sm font-semibold text-white/60 mb-2">Current state</h2>
+					<div class="flex items-center justify-between mb-2">
+						<h2 class="text-sm font-semibold text-white/60">Current state (live)</h2>
+						<div class="flex items-center gap-2 text-xs">
+							<span id="ws-dot" class="size-2 rounded-full bg-zinc-500"></span>
+							<span id="ws-label" class="text-white/50">connecting…</span>
+						</div>
+					</div>
 					<pre id="state" class="text-xs whitespace-pre-wrap break-words text-white/80">loading…</pre>
-					<button id="refresh" class="mt-4 text-sm text-cf-orange hover:underline">↻ refresh</button>
+					<button id="refresh" class="mt-4 text-sm text-cf-orange hover:underline">↻ refresh (HTTP)</button>
 				</section>
 
 				<section class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6">
@@ -406,20 +430,26 @@ app.get("/test-session/:id", (c) => {
 						const formEl = document.getElementById("status-form");
 						const msgEl = document.getElementById("status-msg");
 						const deleteBtn = document.getElementById("delete-btn");
-
+						const wsDot = document.getElementById("ws-dot");
+						const wsLabel = document.getElementById("ws-label");
 						const statusSelect = formEl.querySelector('select[name="status"]');
-						async function refresh() {
+
+						function applyState(state) {
+							stateEl.textContent = JSON.stringify(state, null, 2);
+							if (state && state.status) statusSelect.value = state.status;
+						}
+
+						async function httpRefresh() {
 							const r = await fetch("/api/test-session/" + id);
 							const j = await r.json();
-							stateEl.textContent = JSON.stringify(j.state, null, 2);
-							if (j.state && j.state.status) statusSelect.value = j.state.status;
+							applyState(j.state);
 						}
-						refreshEl.addEventListener("click", refresh);
+						refreshEl.addEventListener("click", httpRefresh);
+
 						formEl.addEventListener("submit", async function (e) {
 							e.preventDefault();
 							msgEl.textContent = "updating…";
 							const fd = new FormData(formEl);
-							// drop empty optional payload fields
 							for (const [k, v] of Array.from(fd.entries())) {
 								if (typeof v === "string" && v.trim() === "") fd.delete(k);
 							}
@@ -429,23 +459,61 @@ app.get("/test-session/:id", (c) => {
 							});
 							const j = await r.json();
 							if (j.ok) {
-								msgEl.textContent = "✓ marked " + j.state.status;
-								stateEl.textContent = JSON.stringify(j.state, null, 2);
-								statusSelect.value = j.state.status;
+								msgEl.textContent = "✓ marked " + j.state.status + " (WS will also update below)";
+								applyState(j.state);
 							} else if (r.status === 409) {
 								msgEl.textContent = "⛔ " + j.error;
 							} else {
 								msgEl.textContent = "✗ " + (j.error || "error");
 							}
 						});
+
 						deleteBtn.addEventListener("click", async function () {
 							if (!confirm("Force-delete this DO's storage?")) return;
 							const r = await fetch("/api/test-session/" + id, { method: "DELETE" });
 							const j = await r.json();
 							msgEl.textContent = j.ok ? "✓ deleted" : "✗ " + (j.error || "error");
-							refresh();
 						});
-						refresh();
+
+						// ----- WebSocket -----
+						let ws;
+						let backoff = 500;
+						function setWsStatus(label, color) {
+							wsLabel.textContent = label;
+							wsDot.className = "size-2 rounded-full " + color;
+						}
+						function connect() {
+							const proto = location.protocol === "https:" ? "wss:" : "ws:";
+							const url = proto + "//" + location.host + "/api/session/" + id + "/ws";
+							setWsStatus("connecting…", "bg-yellow-400 animate-pulse");
+							ws = new WebSocket(url);
+							ws.addEventListener("open", function () {
+								setWsStatus("live", "bg-emerald-500");
+								backoff = 500;
+							});
+							ws.addEventListener("message", function (e) {
+								if (e.data === "pong") return;
+								try {
+									const msg = JSON.parse(e.data);
+									if (msg.type === "state") applyState(msg.state);
+									else if (msg.type === "deleted") {
+										msgEl.textContent = "✓ session deleted (broadcast received)";
+										setWsStatus("deleted", "bg-red-500");
+									}
+								} catch (err) {
+									console.error("bad ws frame:", e.data, err);
+								}
+							});
+							ws.addEventListener("close", function () {
+								setWsStatus("disconnected — retrying", "bg-red-500");
+								setTimeout(connect, backoff);
+								backoff = Math.min(backoff * 2, 10000);
+							});
+							ws.addEventListener("error", function () {
+								// close will fire too; let it handle reconnect.
+							});
+						}
+						connect();
 					})();
 				</script>
 			</main>`,
