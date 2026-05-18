@@ -241,11 +241,14 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 2.4 &middot; Content moderation
+					Step 3.1 &middot; Watermark composition
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/test-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						🛡️ Test content moderation →
+					<a href="/test-watermark" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						🏷️ Test watermark overlay →
+					</a>
+					<a href="/test-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						🛡️ Test content moderation
 					</a>
 					<a href="/test-scene-grid" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						🎬 Generate all 6 scenes from one selfie
@@ -263,7 +266,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "2.4" });
+	return c.json({ status: "ok", step: "3.1" });
 });
 
 /**
@@ -474,7 +477,7 @@ app.post("/api/test-scene-grid", async (c) => {
 	const selfieType = selfie.type || "image/jpeg";
 
 	// Also stash the original selfie so the review page can show the input.
-	await c.env.IMAGES.put(`prompt-spike/${runId}/selfie.jpg`, selfieBytes, {
+	await c.env.BUCKET.put(`prompt-spike/${runId}/selfie.jpg`, selfieBytes, {
 		httpMetadata: { contentType: selfieType },
 	});
 
@@ -488,7 +491,7 @@ app.post("/api/test-scene-grid", async (c) => {
 			});
 			const ext = contentType === "image/png" ? "png" : "jpg";
 			const key = `prompt-spike/${runId}/${scene.id}.${ext}`;
-			await c.env.IMAGES.put(key, bytes, {
+			await c.env.BUCKET.put(key, bytes, {
 				httpMetadata: { contentType },
 				customMetadata: {
 					sceneId: scene.id,
@@ -529,7 +532,7 @@ app.get("/test-scene-grid/:runId", async (c) => {
 
 	const scenes = await loadScenes(c.env);
 	const prefix = `prompt-spike/${runId}/`;
-	const listing = await c.env.IMAGES.list({ prefix, limit: 100 });
+	const listing = await c.env.BUCKET.list({ prefix, limit: 100 });
 	const keysByScene = new Map<string, string>();
 	for (const obj of listing.objects) {
 		const filename = obj.key.slice(prefix.length); // "<sceneId>.jpg" or "selfie.jpg"
@@ -598,7 +601,7 @@ app.get("/api/scene-grid-img", async (c) => {
 	if (!key || !key.startsWith("prompt-spike/")) {
 		return c.json({ error: "invalid key" }, 400);
 	}
-	const obj = await c.env.IMAGES.get(key);
+	const obj = await c.env.BUCKET.get(key);
 	if (!obj) return c.json({ error: "not found", key }, 404);
 	return new Response(obj.body, {
 		headers: {
@@ -697,6 +700,110 @@ app.post("/api/test-moderate", async (c) => {
 });
 
 /**
+ * Renders the watermark test form.
+ * GET /test-watermark
+ */
+app.get("/test-watermark", (c) => {
+	return c.html(
+		page(
+			"Watermark test — Step 3.1",
+			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
+				<h1 class="text-3xl font-bold mb-2">Watermark composition</h1>
+				<p class="text-white/60 mb-8 max-w-xl text-center">
+					Upload any image. We'll overlay the "I 🧡 NY" watermark in the bottom-right corner
+					using the Cloudflare Images binding and return the composited JPEG.
+				</p>
+				<form id="wm-form" action="/api/test-watermark" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
+					<div>
+						<label class="block text-sm font-medium mb-2">Base image</label>
+						<input id="wm-img" type="file" name="image" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
+					</div>
+					<button id="wm-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
+						<span data-label="idle">Apply watermark</span>
+						<span data-label="loading" class="hidden items-center gap-2">
+							<svg class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+								<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="3" />
+								<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+							</svg>
+							<span>Compositing…</span>
+						</span>
+					</button>
+				</form>
+				<div class="mt-8">
+					<p class="text-xs text-white/40 mb-2">Current watermark asset:</p>
+					<img src="/watermark.png" alt="watermark" class="max-w-md rounded bg-white/5 p-4" />
+				</div>
+				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
+				<script>
+					(function () {
+						const form = document.getElementById("wm-form");
+						const button = document.getElementById("wm-submit");
+						const idle = button.querySelector('[data-label="idle"]');
+						const loading = button.querySelector('[data-label="loading"]');
+						function setLoading(on) {
+							button.disabled = on;
+							form.style.pointerEvents = on ? "none" : "";
+							form.style.opacity = on ? "0.85" : "";
+							idle.classList.toggle("hidden", on);
+							loading.classList.toggle("hidden", !on);
+							loading.classList.toggle("inline-flex", on);
+						}
+						form.addEventListener("submit", function () { setLoading(true); });
+						window.addEventListener("pageshow", function (e) { if (e.persisted) setLoading(false); });
+					})();
+				</script>
+			</main>`,
+		),
+	);
+});
+
+/**
+ * Composites the watermark onto an uploaded image using Cloudflare Images binding.
+ * Output is a JPEG with the watermark in the bottom-right corner.
+ * POST /api/test-watermark  (multipart: image=file)
+ */
+app.post("/api/test-watermark", async (c) => {
+	let inForm: FormData;
+	try {
+		inForm = await c.req.formData();
+	} catch (err) {
+		return c.json({ error: "expected multipart/form-data with 'image'", details: String(err) }, 400);
+	}
+	const image = inForm.get("image");
+	if (!(image instanceof File) || image.size === 0) {
+		return c.json({ error: "missing image file" }, 400);
+	}
+
+	// Fetch watermark from our static assets binding
+	const wmReq = new Request("http://internal/watermark.png");
+	const wmResp = await c.env.ASSETS.fetch(wmReq);
+	if (!wmResp.ok || !wmResp.body) {
+		return c.json({ error: "watermark asset not available" }, 500);
+	}
+
+	const started = Date.now();
+	try {
+		const baseStream = image.stream();
+		const wmStream = wmResp.body;
+
+		// Watermark width = ~22% of postcard width (1024px target). 1024 * 0.22 ≈ 225px wide.
+		const result = await c.env.IMAGES.input(baseStream)
+			.draw(
+				c.env.IMAGES.input(wmStream).transform({ width: 320 }),
+				{ bottom: 32, right: 32, opacity: 0.95 },
+			)
+			.output({ format: "image/jpeg" });
+
+		const response = result.response();
+		const elapsedMs = Date.now() - started;
+		response.headers.set("x-elapsed-ms", String(elapsedMs));
+		return response;
+	} catch (err) {
+		return c.json({ error: "watermark composition failed", details: String(err) }, 500);
+	}
+});
+
+/**
  * Test endpoint: generate an image with Workers AI (FLUX.2 klein 4B).
  * GET /api/test-ai?prompt=...
  * Returns image/png directly so you can preview in browser.
@@ -771,7 +878,7 @@ app.get("/api/test-upload", async (c) => {
 	const bytes = Uint8Array.from(atob(tinyPngBase64), (ch) => ch.charCodeAt(0));
 
 	const key = `test/${Date.now()}-tiny.png`;
-	await c.env.IMAGES.put(key, bytes, {
+	await c.env.BUCKET.put(key, bytes, {
 		httpMetadata: { contentType: "image/png" },
 	});
 
@@ -783,7 +890,7 @@ app.get("/api/test-upload", async (c) => {
  * GET /api/test-list
  */
 app.get("/api/test-list", async (c) => {
-	const listing = await c.env.IMAGES.list({ limit: 10 });
+	const listing = await c.env.BUCKET.list({ limit: 10 });
 	return c.json({
 		count: listing.objects.length,
 		truncated: listing.truncated,
@@ -803,7 +910,7 @@ app.get("/api/test-get", async (c) => {
 	const key = c.req.query("key");
 	if (!key) return c.json({ error: "missing ?key=" }, 400);
 
-	const obj = await c.env.IMAGES.get(key);
+	const obj = await c.env.BUCKET.get(key);
 	if (!obj) return c.json({ error: "not found", key }, 404);
 
 	return new Response(obj.body, {

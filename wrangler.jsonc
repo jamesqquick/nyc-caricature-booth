@@ -10,7 +10,7 @@
 	},
 	"r2_buckets": [
 		{
-			"binding": "IMAGES",
+			"binding": "BUCKET",
 			"bucket_name": "nyc-booth-images"
 		}
 	],
@@ -30,6 +30,9 @@
 	],
 	"ai": {
 		"binding": "AI"
+	},
+	"images": {
+		"binding": "IMAGES"
 	},
 	"observability": {
 		"enabled": true
