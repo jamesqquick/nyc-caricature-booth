@@ -38,7 +38,7 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 1.1 &middot; R2 bucket bound
+					Step 1.2 &middot; D1 database wired
 				</div>
 			</main>`,
 		),
@@ -46,7 +46,30 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "1.1" });
+	return c.json({ status: "ok", step: "1.2" });
+});
+
+/**
+ * Test endpoint: insert a row into D1 and read recent rows back.
+ * GET /api/test-db
+ */
+app.get("/api/test-db", async (c) => {
+	const id = crypto.randomUUID();
+	const inserted = await c.env.DB.prepare(
+		"INSERT INTO sessions (id, status) VALUES (?, ?) RETURNING id, created_at, status",
+	)
+		.bind(id, "test")
+		.first<{ id: string; created_at: number; status: string }>();
+
+	const recent = await c.env.DB.prepare(
+		"SELECT id, created_at, status FROM sessions ORDER BY created_at DESC LIMIT 5",
+	).all<{ id: string; created_at: number; status: string }>();
+
+	return c.json({
+		ok: true,
+		inserted,
+		recent: recent.results,
+	});
 });
 
 /**
