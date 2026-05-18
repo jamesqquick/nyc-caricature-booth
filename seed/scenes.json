@@ -1,0 +1,44 @@
+[
+	{
+		"id": "hot-dog-stand",
+		"name": "Hot Dog Stand",
+		"emoji": "🌭",
+		"description": "Grabbing a dirty water dog from a classic NYC street cart.",
+		"prompt": "A caricature portrait of the person in the reference photo, standing at an iconic New York City hot dog stand on a bustling Manhattan sidewalk. Yellow Sabrett umbrella, steaming pretzels and hot dogs, yellow taxi cabs blurred in the background. Exaggerated friendly caricature style, oversized head, warm colorful illustration, daytime, vibrant."
+	},
+	{
+		"id": "subway",
+		"name": "Subway Platform",
+		"emoji": "🚇",
+		"description": "Waiting on the platform as the train rolls in.",
+		"prompt": "A caricature portrait of the person in the reference photo, standing on a New York City subway platform. Tiled walls, '6' train pulling in with motion blur, fluorescent lights, subway signage. Exaggerated friendly caricature style, oversized head, warm colorful illustration, slightly gritty urban atmosphere."
+	},
+	{
+		"id": "central-park",
+		"name": "Central Park",
+		"emoji": "🌳",
+		"description": "Strolling past the Bow Bridge on a perfect spring day.",
+		"prompt": "A caricature portrait of the person in the reference photo, standing on the Bow Bridge in Central Park. Lush green trees, the Manhattan skyline peeking through, joggers and dog walkers in the background, golden hour sunlight. Exaggerated friendly caricature style, oversized head, warm colorful illustration."
+	},
+	{
+		"id": "broadway",
+		"name": "Broadway",
+		"emoji": "🎭",
+		"description": "Under the glow of a Broadway marquee in the theater district.",
+		"prompt": "A caricature portrait of the person in the reference photo, standing under a glowing Broadway theater marquee at night. Bright bulbs spelling out a show title, red carpet, theater crowd in formal attire blurred behind. Exaggerated friendly caricature style, oversized head, warm colorful illustration, nighttime, theatrical lighting."
+	},
+	{
+		"id": "times-square",
+		"name": "Times Square",
+		"emoji": "🌆",
+		"description": "Standing in the middle of Times Square's neon chaos.",
+		"prompt": "A caricature portrait of the person in the reference photo, standing in the middle of Times Square at night. Massive glowing digital billboards, yellow taxis, neon advertisements, tourists with cameras in the background. Exaggerated friendly caricature style, oversized head, warm colorful illustration, vibrant nighttime saturated colors."
+	},
+	{
+		"id": "brooklyn-bridge",
+		"name": "Brooklyn Bridge",
+		"emoji": "🌉",
+		"description": "Walking the Brooklyn Bridge with the skyline behind.",
+		"prompt": "A caricature portrait of the person in the reference photo, standing on the pedestrian walkway of the Brooklyn Bridge. Iconic stone arches and steel cables, Manhattan skyline in the background, blue sky with soft clouds. Exaggerated friendly caricature style, oversized head, warm colorful illustration, daytime."
+	}
+]

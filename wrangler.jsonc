@@ -22,6 +22,12 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	"kv_namespaces": [
+		{
+			"binding": "CONFIG",
+			"id": "eb40539962954422a9b409c91b1ee2f9"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}

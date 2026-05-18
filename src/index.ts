@@ -38,7 +38,7 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 1.2 &middot; D1 database wired
+					Step 1.3 &middot; KV scenes seeded
 				</div>
 			</main>`,
 		),
@@ -46,7 +46,23 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "1.2" });
+	return c.json({ status: "ok", step: "1.3" });
+});
+
+/**
+ * Returns the list of available NYC scenes from KV.
+ * GET /api/scenes
+ */
+app.get("/api/scenes", async (c) => {
+	const raw = await c.env.CONFIG.get("scenes");
+	if (!raw) return c.json({ error: "scenes not configured" }, 500);
+
+	try {
+		const scenes = JSON.parse(raw);
+		return c.json({ count: scenes.length, scenes });
+	} catch (err) {
+		return c.json({ error: "invalid scenes JSON", details: String(err) }, 500);
+	}
 });
 
 /**
