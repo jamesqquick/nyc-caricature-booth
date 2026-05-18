@@ -3,6 +3,7 @@
 	"name": "nyc-caricature-booth",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-10-01",
+	"account_id": "e9bc21da719562a3e45d77de7dd042de",
 	"assets": {
 		"directory": "./public",
 		"binding": "ASSETS"
