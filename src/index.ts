@@ -2,91 +2,12 @@ import { Hono } from "hono";
 import QRCode from "qrcode";
 
 import { moderateImage } from "./lib/moderation";
+import { runFlux } from "./lib/flux";
+import { loadScenes, type Scene } from "./lib/scenes";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 
 const app = new Hono<{ Bindings: Env }>();
-
-type Scene = {
-	id: string;
-	name: string;
-	emoji: string;
-	description: string;
-	prompt: string;
-};
-
-type FluxResult = {
-	bytes: Uint8Array;
-	contentType: "image/jpeg" | "image/png" | "application/octet-stream";
-	elapsedMs: number;
-};
-
-/**
- * Calls FLUX.2 klein 4B with a prompt and optional reference selfie.
- * Returns decoded image bytes + sniffed content-type + elapsed time.
- */
-async function runFlux(
-	ai: Ai,
-	opts: {
-		prompt: string;
-		selfieBytes?: ArrayBuffer;
-		selfieType?: string;
-		width?: number;
-		height?: number;
-	},
-): Promise<FluxResult> {
-	const form = new FormData();
-	form.append("prompt", opts.prompt);
-	form.append("width", String(opts.width ?? 1024));
-	form.append("height", String(opts.height ?? 1024));
-	if (opts.selfieBytes) {
-		const blob = new Blob([opts.selfieBytes], {
-			type: opts.selfieType || "image/jpeg",
-		});
-		form.append("input_image_0", blob, "selfie.jpg");
-	}
-
-	const formResponse = new Response(form);
-	const formStream = formResponse.body;
-	const formContentType =
-		formResponse.headers.get("content-type") ?? "multipart/form-data";
-
-	const started = Date.now();
-	const resp = (await ai.run("@cf/black-forest-labs/flux-2-klein-4b", {
-		multipart: {
-			body: formStream as ReadableStream,
-			contentType: formContentType,
-		},
-	})) as { image?: string } | unknown;
-	const elapsedMs = Date.now() - started;
-
-	if (
-		!resp ||
-		typeof resp !== "object" ||
-		!("image" in resp) ||
-		typeof resp.image !== "string"
-	) {
-		throw new Error(`Unexpected AI response: ${JSON.stringify(resp).slice(0, 200)}`);
-	}
-
-	const bytes = Uint8Array.from(atob(resp.image), (ch) => ch.charCodeAt(0));
-	const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
-	const isPng =
-		bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
-	const contentType: FluxResult["contentType"] = isJpeg
-		? "image/jpeg"
-		: isPng
-			? "image/png"
-			: "application/octet-stream";
-
-	return { bytes, contentType, elapsedMs };
-}
-
-async function loadScenes(env: Env): Promise<Scene[]> {
-	const raw = await env.CONFIG.get("scenes");
-	if (!raw) throw new Error("scenes not configured in KV");
-	return JSON.parse(raw) as Scene[];
-}
 
 // ----- Postcard dimensions (4x6 inches @ 300 DPI, landscape) -----
 const POSTCARD_W = 1800;
@@ -344,11 +265,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 4.2 &middot; Workflow + moderation
+					Step 4.3 &middot; Workflow: moderate + generate
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/test-workflow-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						⚡ Workflow + moderation (selfie → verdict) →
+						⚡ Workflow: moderate + generate (selfie + scene → caricature) →
 					</a>
 					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚙️ Trigger bare workflow (no input)
@@ -378,7 +299,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "4.2" });
+	return c.json({ status: "ok", step: "4.3" });
 });
 
 /**
@@ -426,18 +347,29 @@ app.get("/api/test-workflow/:id", async (c) => {
 app.get("/test-workflow-moderate", (c) => {
 	return c.html(
 		page(
-			"Workflow moderation — Step 4.2",
+			"Workflow — Step 4.3",
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
-				<h1 class="text-3xl font-bold mb-2">Workflow + moderation</h1>
+				<h1 class="text-3xl font-bold mb-2">Workflow: moderate + generate</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
-					Upload a selfie. We'll stash it in R2, kick off a CaricatureWorkflow,
-					and the workflow's <code>moderate</code> step will run Llama 3.2 Vision
-					against it. Watch the status update live.
+					Upload a selfie + pick a scene. We'll stash the selfie in R2, kick off
+					a CaricatureWorkflow that runs <code>moderate</code> (Llama 3.2 Vision)
+					then <code>generate</code> (FLUX.2 i2i) with retries.
 				</p>
 				<form id="wf-form" action="/api/test-workflow-moderate" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
 					<div>
 						<label class="block text-sm font-medium mb-2">Selfie</label>
 						<input id="wf-selfie" type="file" name="selfie" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
+					</div>
+					<div>
+						<label class="block text-sm font-medium mb-2">Scene</label>
+						<select id="wf-scene" name="scene_id" class="w-full rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
+							<option value="hot-dog-stand">🌭 Hot Dog Stand</option>
+							<option value="subway">🚇 Subway Platform</option>
+							<option value="central-park">🌳 Central Park</option>
+							<option value="broadway">🎭 Broadway</option>
+							<option value="times-square">🌆 Times Square</option>
+							<option value="brooklyn-bridge">🌉 Brooklyn Bridge</option>
+						</select>
 					</div>
 					<button id="wf-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
 						<span data-label="idle">Run workflow</span>
@@ -455,10 +387,12 @@ app.get("/test-workflow-moderate", (c) => {
 					(function () {
 						const form = document.getElementById("wf-form");
 						const button = document.getElementById("wf-submit");
+						const scene = document.getElementById("wf-scene");
 						const idle = button.querySelector('[data-label="idle"]');
 						const loading = button.querySelector('[data-label="loading"]');
 						function setLoading(on) {
 							button.disabled = on;
+							scene.disabled = on;
 							form.style.pointerEvents = on ? "none" : "";
 							form.style.opacity = on ? "0.85" : "";
 							idle.classList.toggle("hidden", on);
@@ -475,9 +409,9 @@ app.get("/test-workflow-moderate", (c) => {
 });
 
 /**
- * Uploads a selfie to R2 and kicks off the moderation workflow with the R2 key.
- * Redirects (303) to a status page that polls the workflow instance.
- * POST /api/test-workflow-moderate  (multipart: selfie=file)
+ * Uploads a selfie to R2 and kicks off the workflow with the R2 key + chosen
+ * scene id. Redirects (303) to a status page that polls the workflow instance.
+ * POST /api/test-workflow-moderate  (multipart: selfie=file, scene_id=string)
  */
 app.post("/api/test-workflow-moderate", async (c) => {
 	let inForm: FormData;
@@ -489,6 +423,19 @@ app.post("/api/test-workflow-moderate", async (c) => {
 	const selfie = inForm.get("selfie");
 	if (!(selfie instanceof File) || selfie.size === 0) {
 		return c.json({ error: "missing selfie file" }, 400);
+	}
+	const sceneId = String(inForm.get("scene_id") ?? "hot-dog-stand");
+
+	// Validate scene id against KV up front so we fail fast (before paying
+	// the cost of an R2 upload + workflow create).
+	let scenes: Scene[];
+	try {
+		scenes = await loadScenes(c.env);
+	} catch (err) {
+		return c.json({ error: String(err) }, 500);
+	}
+	if (!scenes.some((s) => s.id === sceneId)) {
+		return c.json({ error: `unknown scene_id: ${sceneId}` }, 400);
 	}
 
 	const sessionId = crypto.randomUUID();
@@ -504,7 +451,7 @@ app.post("/api/test-workflow-moderate", async (c) => {
 	});
 
 	const instance = await c.env.CARICATURE_WORKFLOW.create({
-		params: { sessionId, selfieKey, note: "step-4.2-moderate-test" },
+		params: { sessionId, selfieKey, sceneId, note: "step-4.3-generate-test" },
 	});
 
 	const url = new URL(c.req.url);
