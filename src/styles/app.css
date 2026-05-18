@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@theme {
+	--color-cf-orange: #f6821f;
+	--color-cf-orange-dark: #d97614;
+	--color-cf-ink: #1d1f20;
+	--font-display: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+@source "../**/*.ts";
+@source "../**/*.tsx";

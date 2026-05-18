@@ -165,3 +165,6 @@ dist
 .env*
 !.env.example
 .wrangler/
+
+# Built CSS (tailwind generates from src/styles/app.css)
+public/app.css
