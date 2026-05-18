@@ -786,10 +786,11 @@ app.post("/api/test-watermark", async (c) => {
 		const baseStream = image.stream();
 		const wmStream = wmResp.body;
 
-		// Watermark width = ~22% of postcard width (1024px target). 1024 * 0.22 ≈ 225px wide.
+		// Watermark width ≈ 40% of postcard width (the brand mark is wide because the
+		// Cloudflare logo is a long horizontal cloud — see public/watermark.png).
 		const result = await c.env.IMAGES.input(baseStream)
 			.draw(
-				c.env.IMAGES.input(wmStream).transform({ width: 320 }),
+				c.env.IMAGES.input(wmStream).transform({ width: 400 }),
 				{ bottom: 32, right: 32, opacity: 0.95 },
 			)
 			.output({ format: "image/jpeg" });

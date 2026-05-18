@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
 """Build the 'I [Cloudflare logo] NY' watermark PNG.
 
-Produces a wide, transparent PNG with white text + the Cloudflare logo
-between the 'I' and 'NY'. Designed to be drawn on the bottom-right of
-a postcard at small size (~25% of the postcard width).
+Produces a transparent PNG sized exactly to its content (plus padding),
+with white text + the Cloudflare logo between the 'I' and 'NY'. Designed
+to be drawn on the bottom-right of a postcard at small size (~25% of the
+postcard width).
 """
 
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 LOGO = ROOT / "public" / "cloudflare-logo.png"
 OUT = ROOT / "public" / "watermark.png"
 
-# Final watermark canvas (transparent)
-W, H = 900, 300  # 3:1 aspect ratio, plenty of resolution for downscaling
+# ---- Tunables ---------------------------------------------------------------
+FONT_SIZE = 220
+TARGET_LOGO_HEIGHT = 230
+GAP = 36                # px between I, logo, NY
+SHADOW_OFFSET = 6
+SHADOW_BLUR_RADIUS = 8
+PADDING = 40            # transparent padding around everything (room for shadow + safe area)
+# -----------------------------------------------------------------------------
 
-# Background: transparent
-img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-draw = ImageDraw.Draw(img)
-
-# Pick the heaviest system font available
 font_candidates = [
     "/System/Library/Fonts/Supplemental/Arial Black.ttf",
+    "/System/Library/Fonts/Supplemental/Impact.ttf",
     "/System/Library/Fonts/HelveticaNeue.ttc",
     "/System/Library/Fonts/Helvetica.ttc",
     "/Library/Fonts/Arial.ttf",
@@ -31,62 +34,98 @@ font_path = next((p for p in font_candidates if Path(p).exists()), None)
 if font_path is None:
     raise SystemExit("No suitable system font found")
 
-font_size = 220
-font = ImageFont.truetype(font_path, font_size)
+font = ImageFont.truetype(font_path, FONT_SIZE)
 
-# Load and size the Cloudflare logo to fit between text
+# Use a throwaway draw to measure
+_tmp = Image.new("RGBA", (10, 10))
+_draw = ImageDraw.Draw(_tmp)
+
+
+def measure(s, f):
+    """Return (width, height, offset_x, offset_y) so we know how far to shift
+    when drawing so the glyph sits at (0,0) in the bounding box.
+    """
+    bbox = _draw.textbbox((0, 0), s, font=f)
+    # bbox = (x0, y0, x1, y1)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1], -bbox[0], -bbox[1]
+
+
+i_w, i_h, i_ox, i_oy = measure("I", font)
+ny_w, ny_h, ny_ox, ny_oy = measure("NY", font)
+
+# Load logo
 logo = Image.open(LOGO).convert("RGBA")
-target_logo_h = 230
-ratio = target_logo_h / logo.height
-logo = logo.resize((int(logo.width * ratio), target_logo_h), Image.LANCZOS)
+ratio = TARGET_LOGO_HEIGHT / logo.height
+logo = logo.resize((int(logo.width * ratio), TARGET_LOGO_HEIGHT), Image.LANCZOS)
 
-# Measure text
-def text_size(s, f):
-    bbox = draw.textbbox((0, 0), s, font=f)
-    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+# Row layout: we align everything to a common centerline.
+row_height = max(i_h, ny_h, logo.height)
+content_width = i_w + GAP + logo.width + GAP + ny_w
 
-i_w, i_h = text_size("I", font)
-ny_w, ny_h = text_size("NY", font)
+W = content_width + PADDING * 2
+H = row_height + PADDING * 2
 
-# Spacing
-gap = 30  # gap between I, logo, NY
-total_w = i_w + gap + logo.width + gap + ny_w
-start_x = (W - total_w) // 2
+img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+draw = ImageDraw.Draw(img)
+
 center_y = H // 2
+cursor_x = PADDING
 
-# Draw I
-i_x = start_x
-i_y = center_y - i_h // 2 - 20  # small optical adjustment for cap height
-draw.text((i_x, i_y), "I", font=font, fill=(255, 255, 255, 255))
+# Compute draw positions
+def y_for(glyph_h, offset_y):
+    """Top-Y so that glyph is vertically centered."""
+    return center_y - glyph_h // 2 + offset_y
 
-# Draw logo
-logo_x = i_x + i_w + gap
-logo_y = center_y - logo.height // 2
-img.paste(logo, (logo_x, logo_y), logo)
 
-# Draw NY
-ny_x = logo_x + logo.width + gap
-ny_y = i_y
-draw.text((ny_x, ny_y), "NY", font=font, fill=(255, 255, 255, 255))
+i_draw_pos = (cursor_x + i_ox, y_for(i_h, i_oy))
+i_left = cursor_x
+cursor_x += i_w + GAP
 
-# Add a subtle dark stroke / shadow underneath everything for legibility on light bgs
-# We'll render the same text/logo onto a black layer, blur it, then composite.
+logo_pos = (cursor_x, center_y - logo.height // 2)
+cursor_x += logo.width + GAP
+
+ny_draw_pos = (cursor_x + ny_ox, y_for(ny_h, ny_oy))
+ny_left = cursor_x
+
+# --- Shadow layer (rendered separately, then blurred & composited) ---
 shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 sd = ImageDraw.Draw(shadow)
-sd.text((i_x + 4, i_y + 4), "I", font=font, fill=(0, 0, 0, 180))
-sd.text((ny_x + 4, ny_y + 4), "NY", font=font, fill=(0, 0, 0, 180))
-shadow_logo = logo.copy()
-# Replace RGB of the shadow logo with black, keep its alpha
-r, g, b, a = shadow_logo.split()
+sd.text(
+    (i_draw_pos[0] + SHADOW_OFFSET, i_draw_pos[1] + SHADOW_OFFSET),
+    "I",
+    font=font,
+    fill=(0, 0, 0, 200),
+)
+sd.text(
+    (ny_draw_pos[0] + SHADOW_OFFSET, ny_draw_pos[1] + SHADOW_OFFSET),
+    "NY",
+    font=font,
+    fill=(0, 0, 0, 200),
+)
+# Logo shadow: black silhouette
+r, g, b, a = logo.split()
 black = Image.new("L", logo.size, 0)
-shadow_logo = Image.merge("RGBA", (black, black, black, a.point(lambda v: min(180, v))))
-shadow.paste(shadow_logo, (logo_x + 4, logo_y + 4), shadow_logo)
+faded_alpha = a.point(lambda v: min(200, v))
+shadow_logo = Image.merge("RGBA", (black, black, black, faded_alpha))
+shadow.paste(
+    shadow_logo,
+    (logo_pos[0] + SHADOW_OFFSET, logo_pos[1] + SHADOW_OFFSET),
+    shadow_logo,
+)
+shadow = shadow.filter(ImageFilter.GaussianBlur(radius=SHADOW_BLUR_RADIUS))
 
-from PIL import ImageFilter
+# --- Main layer ---
+draw.text(i_draw_pos, "I", font=font, fill=(255, 255, 255, 255))
+img.paste(logo, logo_pos, logo)
+draw.text(ny_draw_pos, "NY", font=font, fill=(255, 255, 255, 255))
 
-shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
-
-# Composite: shadow under main
 final = Image.alpha_composite(shadow, img)
 final.save(OUT, "PNG", optimize=True)
-print(f"Wrote {OUT}  size={OUT.stat().st_size} bytes  dims={final.size}")
+
+print(
+    f"Wrote {OUT}\n"
+    f"  size on disk: {OUT.stat().st_size} bytes\n"
+    f"  dimensions:   {final.size}\n"
+    f"  layout:       I={i_w}x{i_h}  logo={logo.size[0]}x{logo.size[1]}  NY={ny_w}x{ny_h}\n"
+    f"  font:         {font_path}"
+)
