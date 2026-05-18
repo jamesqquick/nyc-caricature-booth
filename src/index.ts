@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import QRCode from "qrcode";
 
+import { moderateImage } from "./lib/moderation";
+
 export { CaricatureWorkflow } from "./workflows/caricature";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -304,127 +306,7 @@ async function buildPostcard(
 	return result.response();
 }
 
-type ModerationVerdict = {
-	safe: boolean;
-	reasons: string[];
-	raw: string;
-	elapsedMs: number;
-};
-
-const MODERATION_SYSTEM_PROMPT = `You are a strict content moderation system for a public photo booth at a corporate event.
-Examine the provided image and decide whether it is SAFE to use as the input photo for an AI caricature generator that will be printed as a postcard and displayed on a public screen.
-
-Flag the image as UNSAFE if it contains any of:
-- nudity, sexual content, or sexualized minors
-- explicit violence, gore, or weapons aimed at people
-- hate symbols or extremist imagery
-- illegal drug use
-- offensive gestures or profanity visible in the image
-- celebrity impersonation or copyrighted characters as the primary subject
-- text overtly promoting violence, hate, or harassment
-
-A normal selfie of one or more adults (smiling, neutral, silly faces, casual clothes) is SAFE.
-Slightly blurry photos, group photos, hats/sunglasses, and unusual angles are SAFE.
-
-Respond with ONLY a single line of JSON, no markdown fences, no commentary, in this exact shape:
-{"safe": true} or {"safe": false, "reasons": ["short reason 1", "short reason 2"]}`;
-
-/**
- * Llama 3.2 Vision requires a one-time per-account license-acceptance prompt
- * ("agree") before it can be used. This sends that handshake.
- * The model paradoxically returns the success message as an AiError; we
- * swallow it because the side effect (license accepted) is what we want.
- */
-async function acceptLlamaVisionLicense(ai: Ai): Promise<void> {
-	try {
-		await ai.run("@cf/meta/llama-3.2-11b-vision-instruct", {
-			prompt: "agree",
-		});
-	} catch (err) {
-		const msg = String(err);
-		if (msg.includes("Thank you for agreeing")) return;
-		throw err;
-	}
-}
-
-async function moderateImage(
-	ai: Ai,
-	imageBytes: Uint8Array,
-): Promise<ModerationVerdict> {
-	const started = Date.now();
-
-	// Convert bytes -> array of numbers as the vision model expects (per Workers AI binding)
-	const imageArray = Array.from(imageBytes);
-
-	async function callModel() {
-		return (await ai.run("@cf/meta/llama-3.2-11b-vision-instruct", {
-			messages: [
-				{ role: "system", content: MODERATION_SYSTEM_PROMPT },
-				{
-					role: "user",
-					content: "Is this image safe? Reply with the JSON verdict.",
-				},
-			],
-			image: imageArray,
-			max_tokens: 256,
-		})) as { response?: string } | unknown;
-	}
-
-	let resp: unknown;
-	try {
-		resp = await callModel();
-	} catch (err) {
-		const msg = String(err);
-		// One-time license acceptance handshake then retry.
-		if (msg.includes("5016") && msg.toLowerCase().includes("agree")) {
-			await acceptLlamaVisionLicense(ai);
-			resp = await callModel();
-		} else {
-			throw err;
-		}
-	}
-	const elapsedMs = Date.now() - started;
-
-	// The model response can be one of:
-	//   { response: { safe: true } }                — already-parsed JSON object
-	//   { response: { safe: false, reasons: [..] } }
-	//   { response: "<string that may contain JSON>" }
-	// We normalize all three.
-	const raw = JSON.stringify(resp);
-	let safe = false;
-	let reasons: string[] = [];
-	let parsedFromString = false;
-
-	if (resp && typeof resp === "object" && "response" in resp) {
-		const r = (resp as { response: unknown }).response;
-		if (r && typeof r === "object") {
-			const obj = r as { safe?: unknown; reasons?: unknown };
-			safe = obj.safe === true;
-			if (Array.isArray(obj.reasons)) reasons = obj.reasons.map(String);
-			parsedFromString = true;
-		} else if (typeof r === "string") {
-			const match = r.match(/\{[\s\S]*?\}/);
-			if (match) {
-				try {
-					const obj = JSON.parse(match[0]) as { safe?: unknown; reasons?: unknown };
-					safe = obj.safe === true;
-					if (Array.isArray(obj.reasons)) reasons = obj.reasons.map(String);
-					parsedFromString = true;
-				} catch {
-					// fall through
-				}
-			}
-		}
-	}
-
-	if (!parsedFromString) {
-		reasons = ["could not parse verdict — failing closed"];
-	} else if (!safe && reasons.length === 0) {
-		reasons = ["model returned safe=false with no reasons"];
-	}
-
-	return { safe, reasons, raw, elapsedMs };
-}
+// Moderation helpers are now in src/lib/moderation.ts (shared with workflows).
 
 const page = (title: string, body: string) => `<!doctype html>
 <html lang="en">
@@ -462,11 +344,14 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 4.1 &middot; Workflow skeleton
+					Step 4.2 &middot; Workflow + moderation
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						⚡ Trigger the caricature workflow →
+					<a href="/test-workflow-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						⚡ Workflow + moderation (selfie → verdict) →
+					</a>
+					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						⚙️ Trigger bare workflow (no input)
 					</a>
 					<a href="/test-postcard" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						📮 4×6 postcard format with QR
@@ -493,7 +378,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "4.1" });
+	return c.json({ status: "ok", step: "4.2" });
 });
 
 /**
@@ -531,6 +416,181 @@ app.get("/api/test-workflow/:id", async (c) => {
 	} catch (err) {
 		return c.json({ error: "instance not found", details: String(err) }, 404);
 	}
+});
+
+/**
+ * HTML test form for the moderate-step workflow (step 4.2).
+ * Uploads a selfie, triggers the workflow, redirects to a status page.
+ * GET /test-workflow-moderate
+ */
+app.get("/test-workflow-moderate", (c) => {
+	return c.html(
+		page(
+			"Workflow moderation — Step 4.2",
+			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
+				<h1 class="text-3xl font-bold mb-2">Workflow + moderation</h1>
+				<p class="text-white/60 mb-8 max-w-xl text-center">
+					Upload a selfie. We'll stash it in R2, kick off a CaricatureWorkflow,
+					and the workflow's <code>moderate</code> step will run Llama 3.2 Vision
+					against it. Watch the status update live.
+				</p>
+				<form id="wf-form" action="/api/test-workflow-moderate" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
+					<div>
+						<label class="block text-sm font-medium mb-2">Selfie</label>
+						<input id="wf-selfie" type="file" name="selfie" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
+					</div>
+					<button id="wf-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
+						<span data-label="idle">Run workflow</span>
+						<span data-label="loading" class="hidden items-center gap-2">
+							<svg class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+								<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="3" />
+								<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+							</svg>
+							<span>Uploading…</span>
+						</span>
+					</button>
+				</form>
+				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
+				<script>
+					(function () {
+						const form = document.getElementById("wf-form");
+						const button = document.getElementById("wf-submit");
+						const idle = button.querySelector('[data-label="idle"]');
+						const loading = button.querySelector('[data-label="loading"]');
+						function setLoading(on) {
+							button.disabled = on;
+							form.style.pointerEvents = on ? "none" : "";
+							form.style.opacity = on ? "0.85" : "";
+							idle.classList.toggle("hidden", on);
+							loading.classList.toggle("hidden", !on);
+							loading.classList.toggle("inline-flex", on);
+						}
+						form.addEventListener("submit", function () { setLoading(true); });
+						window.addEventListener("pageshow", function (e) { if (e.persisted) setLoading(false); });
+					})();
+				</script>
+			</main>`,
+		),
+	);
+});
+
+/**
+ * Uploads a selfie to R2 and kicks off the moderation workflow with the R2 key.
+ * Redirects (303) to a status page that polls the workflow instance.
+ * POST /api/test-workflow-moderate  (multipart: selfie=file)
+ */
+app.post("/api/test-workflow-moderate", async (c) => {
+	let inForm: FormData;
+	try {
+		inForm = await c.req.formData();
+	} catch (err) {
+		return c.json({ error: "expected multipart/form-data with 'selfie'", details: String(err) }, 400);
+	}
+	const selfie = inForm.get("selfie");
+	if (!(selfie instanceof File) || selfie.size === 0) {
+		return c.json({ error: "missing selfie file" }, 400);
+	}
+
+	const sessionId = crypto.randomUUID();
+	const ext = (selfie.name.match(/\.(jpe?g|png|webp|heic)$/i)?.[1] ?? "jpg").toLowerCase();
+	const selfieKey = `workflow-test/${sessionId}/selfie.${ext}`;
+
+	await c.env.BUCKET.put(selfieKey, await selfie.arrayBuffer(), {
+		httpMetadata: { contentType: selfie.type || "image/jpeg" },
+		customMetadata: {
+			sessionId,
+			originalName: selfie.name || "(unnamed)",
+		},
+	});
+
+	const instance = await c.env.CARICATURE_WORKFLOW.create({
+		params: { sessionId, selfieKey, note: "step-4.2-moderate-test" },
+	});
+
+	const url = new URL(c.req.url);
+	url.pathname = `/test-workflow-moderate/${instance.id}`;
+	url.search = "";
+	return c.redirect(url.toString(), 303);
+});
+
+/**
+ * Live status page for a workflow-moderate run.
+ * Auto-polls /api/test-workflow/:id every 1s until terminal state.
+ * GET /test-workflow-moderate/:id
+ */
+app.get("/test-workflow-moderate/:id", (c) => {
+	const id = c.req.param("id");
+	if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) {
+		return c.notFound();
+	}
+	return c.html(
+		page(
+			`Workflow ${id.slice(0, 8)}…`,
+			`<main class="min-h-screen flex flex-col items-center px-6 py-12 max-w-3xl mx-auto">
+				<h1 class="text-3xl font-bold mb-2">Workflow run</h1>
+				<p class="text-white/60 text-sm">Instance: <code class="text-white/80">${id}</code></p>
+				<section class="w-full mt-8 rounded-2xl bg-white/5 border border-white/10 p-6">
+					<div class="flex items-center gap-3">
+						<span id="wf-pulse" class="size-3 rounded-full bg-yellow-400 animate-pulse"></span>
+						<span id="wf-status-label" class="text-lg font-semibold">queued</span>
+					</div>
+					<dl class="mt-6 grid grid-cols-2 gap-3 text-sm">
+						<dt class="text-white/50">Started</dt><dd id="wf-started" class="text-white/80">—</dd>
+						<dt class="text-white/50">Elapsed</dt><dd id="wf-elapsed" class="text-white/80">0.0s</dd>
+					</dl>
+				</section>
+				<section class="w-full mt-6 rounded-2xl bg-black/40 border border-white/10 p-4">
+					<h2 class="text-sm font-semibold text-white/60 mb-2">Raw status</h2>
+					<pre id="wf-raw" class="text-xs whitespace-pre-wrap break-words text-white/70">loading…</pre>
+				</section>
+				<a href="/test-workflow-moderate" class="mt-8 text-sm text-white/60 hover:text-white">← new run</a>
+				<script>
+					(function () {
+						const id = ${JSON.stringify(id)};
+						const labelEl = document.getElementById("wf-status-label");
+						const pulseEl = document.getElementById("wf-pulse");
+						const elapsedEl = document.getElementById("wf-elapsed");
+						const startedEl = document.getElementById("wf-started");
+						const rawEl = document.getElementById("wf-raw");
+
+						const t0 = Date.now();
+						startedEl.textContent = new Date().toLocaleTimeString();
+						setInterval(function () {
+							const s = ((Date.now() - t0) / 1000).toFixed(1);
+							elapsedEl.textContent = s + "s";
+						}, 100);
+
+						const terminal = new Set(["complete", "errored", "terminated", "failed"]);
+						const colorMap = {
+							queued:      "bg-yellow-400",
+							running:     "bg-blue-400",
+							paused:      "bg-zinc-400",
+							complete:    "bg-emerald-500",
+							errored:     "bg-red-500",
+							failed:      "bg-red-500",
+							terminated:  "bg-red-500",
+						};
+
+						async function poll() {
+							try {
+								const r = await fetch("/api/test-workflow/" + id);
+								const j = await r.json();
+								const s = (j.status && j.status.status) || "unknown";
+								labelEl.textContent = s;
+								pulseEl.className = "size-3 rounded-full " + (colorMap[s] || "bg-zinc-400") + (terminal.has(s) ? "" : " animate-pulse");
+								rawEl.textContent = JSON.stringify(j.status, null, 2);
+								if (!terminal.has(s)) setTimeout(poll, 1000);
+							} catch (e) {
+								rawEl.textContent = "poll error: " + e.message;
+								setTimeout(poll, 2000);
+							}
+						}
+						poll();
+					})();
+				</script>
+			</main>`,
+		),
+	);
 });
 
 /**
