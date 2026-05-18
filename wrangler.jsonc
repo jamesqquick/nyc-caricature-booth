@@ -41,6 +41,20 @@
 			"class_name": "CaricatureWorkflow"
 		}
 	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "SESSION",
+				"class_name": "SessionDO"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["SessionDO"]
+		}
+	],
 	"observability": {
 		"enabled": true
 	}

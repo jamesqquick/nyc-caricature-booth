@@ -11,6 +11,7 @@ import {
 } from "./lib/postcard";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
+export { SessionDO } from "./session/session";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -56,11 +57,14 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 4.4 &middot; Workflow: full pipeline
+					Step 5.1 &middot; Session DO (bare)
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/test-workflow-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						⚡ Full pipeline (selfie + scene → moderate → generate → postcard → store) →
+					<a href="/test-session" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						🪪 Session DO playground (step 5.1) →
+					</a>
+					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						⚡ Full workflow pipeline (selfie + scene → postcard)
 					</a>
 					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚙️ Trigger bare workflow (no input)
@@ -90,7 +94,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "4.4" });
+	return c.json({ status: "ok", step: "5.1" });
 });
 
 /**
@@ -128,6 +132,218 @@ app.get("/api/test-workflow/:id", async (c) => {
 	} catch (err) {
 		return c.json({ error: "instance not found", details: String(err) }, 404);
 	}
+});
+
+// ---------------------------------------------------------------------------
+// SessionDO test endpoints (step 5.1)
+//
+// One DO per session, addressed by `idFromName(sessionId)`. These routes are
+// thin proxies to the DO's RPC methods so we can verify the binding works
+// before wiring the workflow to it in 5.4.
+// ---------------------------------------------------------------------------
+
+const UUID_RE =
+	/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+const VALID_SESSION_STATUSES = [
+	"queued",
+	"moderating",
+	"generating",
+	"compositing",
+	"done",
+	"errored",
+] as const;
+type SessionStatusName = (typeof VALID_SESSION_STATUSES)[number];
+
+function getSessionStub(env: Env, sessionId: string) {
+	const id = env.SESSION.idFromName(sessionId);
+	return env.SESSION.get(id);
+}
+
+/**
+ * Creates a new session DO (random UUID) and seeds it to status=queued.
+ * POST /api/test-session
+ */
+app.post("/api/test-session", async (c) => {
+	const sessionId = crypto.randomUUID();
+	const stub = getSessionStub(c.env, sessionId);
+	const state = await stub.setStatus("queued", sessionId);
+	return c.json({ ok: true, sessionId, state });
+});
+
+/**
+ * Returns the current state of a session DO.
+ * GET /api/test-session/:id
+ */
+app.get("/api/test-session/:id", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
+	const stub = getSessionStub(c.env, id);
+	const state = await stub.getState(id);
+	return c.json({ ok: true, sessionId: id, state });
+});
+
+/**
+ * Updates a session DO's status. Permissive in 5.1 (no transition validation
+ * yet — that lands in 5.2).
+ * POST /api/test-session/:id/status   body: { status }
+ */
+app.post("/api/test-session/:id/status", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
+
+	// Accept JSON, form-urlencoded, multipart form-data, or even a ?status=
+	// query param so curl + the HTML form + fetch(FormData) all work.
+	const ct = c.req.header("content-type") ?? "";
+	let status: unknown = c.req.query("status");
+
+	if (!status) {
+		try {
+			if (ct.includes("application/json")) {
+				const body = (await c.req.json()) as { status?: unknown };
+				status = body?.status;
+			} else if (
+				ct.includes("application/x-www-form-urlencoded") ||
+				ct.includes("multipart/form-data")
+			) {
+				const fd = await c.req.formData();
+				status = fd.get("status");
+			} else {
+				// Last resort: try to parse as text → maybe it's `status=xxx`.
+				const text = await c.req.text();
+				const m = text.match(/(?:^|&)status=([^&]+)/);
+				if (m) status = decodeURIComponent(m[1]);
+			}
+		} catch (err) {
+			return c.json(
+				{
+					error: "failed to parse body",
+					details: String(err),
+					contentType: ct,
+				},
+				400,
+			);
+		}
+	}
+	if (
+		typeof status !== "string" ||
+		!VALID_SESSION_STATUSES.includes(status as SessionStatusName)
+	) {
+		return c.json(
+			{
+				error: "invalid status",
+				validStatuses: VALID_SESSION_STATUSES,
+			},
+			400,
+		);
+	}
+
+	const stub = getSessionStub(c.env, id);
+	const state = await stub.setStatus(status as SessionStatusName, id);
+	return c.json({ ok: true, sessionId: id, state });
+});
+
+/**
+ * Manual driver page for the SessionDO (step 5.1).
+ * Click to create a session, then use the status form to drive its state.
+ * GET /test-session       — landing / create
+ * GET /test-session/:id   — drive an existing session
+ */
+app.get("/test-session", (c) => {
+	return c.html(
+		page(
+			"Session DO — Step 5.1",
+			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
+				<h1 class="text-3xl font-bold mb-2">Session Durable Object</h1>
+				<p class="text-white/60 mb-8 max-w-xl text-center">
+					One DO per caricature session, addressed by <code>idFromName(sessionId)</code>.
+					Click below to spin up a new one, then drive its status manually.
+				</p>
+				<form id="new-session" action="/api/test-session" method="post" class="w-full max-w-md bg-white/5 rounded-2xl p-8 border border-white/10">
+					<button type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">
+						Create a new session
+					</button>
+				</form>
+				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
+				<script>
+					document.getElementById("new-session").addEventListener("submit", async function (e) {
+						e.preventDefault();
+						const r = await fetch("/api/test-session", { method: "POST" });
+						const j = await r.json();
+						if (j.ok) window.location.href = "/test-session/" + j.sessionId;
+					});
+				</script>
+			</main>`,
+		),
+	);
+});
+
+app.get("/test-session/:id", (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) return c.notFound();
+	const statusOptions = VALID_SESSION_STATUSES.map(
+		(s) => `<option value="${s}">${s}</option>`,
+	).join("");
+	return c.html(
+		page(
+			`Session ${id.slice(0, 8)}…`,
+			`<main class="min-h-screen flex flex-col items-center px-6 py-12 max-w-3xl mx-auto">
+				<h1 class="text-3xl font-bold mb-2">Session DO</h1>
+				<p class="text-white/60 text-sm">Session: <code class="text-white/80">${id}</code></p>
+
+				<section class="w-full mt-8 rounded-2xl bg-white/5 border border-white/10 p-6">
+					<h2 class="text-sm font-semibold text-white/60 mb-2">Current state</h2>
+					<pre id="state" class="text-xs whitespace-pre-wrap break-words text-white/80">loading…</pre>
+					<button id="refresh" class="mt-4 text-sm text-cf-orange hover:underline">↻ refresh</button>
+				</section>
+
+				<section class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6">
+					<h2 class="text-sm font-semibold text-white/60 mb-4">Set status</h2>
+					<form id="status-form" class="flex gap-3">
+						<select name="status" class="flex-1 rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
+							${statusOptions}
+						</select>
+						<button type="submit" class="rounded-full bg-cf-orange px-5 py-2 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+							Apply
+						</button>
+					</form>
+					<p id="status-msg" class="text-xs text-white/50 mt-3"></p>
+				</section>
+
+				<a href="/test-session" class="mt-8 text-sm text-white/60 hover:text-white">← new session</a>
+
+				<script>
+					(function () {
+						const id = ${JSON.stringify(id)};
+						const stateEl = document.getElementById("state");
+						const refreshEl = document.getElementById("refresh");
+						const formEl = document.getElementById("status-form");
+						const msgEl = document.getElementById("status-msg");
+
+						async function refresh() {
+							const r = await fetch("/api/test-session/" + id);
+							const j = await r.json();
+							stateEl.textContent = JSON.stringify(j.state, null, 2);
+						}
+						refreshEl.addEventListener("click", refresh);
+						formEl.addEventListener("submit", async function (e) {
+							e.preventDefault();
+							msgEl.textContent = "updating…";
+							const fd = new FormData(formEl);
+							const r = await fetch("/api/test-session/" + id + "/status", {
+								method: "POST",
+								body: fd,
+							});
+							const j = await r.json();
+							msgEl.textContent = j.ok ? "✓ status set to " + j.state.status : "✗ " + (j.error || "error");
+							if (j.ok) stateEl.textContent = JSON.stringify(j.state, null, 2);
+						});
+						refresh();
+					})();
+				</script>
+			</main>`,
+		),
+	);
 });
 
 /**
