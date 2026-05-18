@@ -7,6 +7,7 @@ import {
 import { moderateImage, type ModerationVerdict } from "../lib/moderation";
 import { runFlux } from "../lib/flux";
 import { loadSceneById } from "../lib/scenes";
+import { buildPostcard } from "../lib/postcard";
 
 /**
  * Payload passed into the workflow when a session starts.
@@ -18,6 +19,7 @@ export type CaricaturePayload = {
 	sessionId: string;
 	selfieKey?: string; // R2 key under the BUCKET binding
 	sceneId?: string; // id matching seed/scenes.json
+	publicOrigin?: string; // e.g. https://nyc-caricature-booth.examples.workers.dev
 	note?: string;
 };
 
@@ -35,22 +37,35 @@ export type GenerateStepOutput = {
 	elapsedMs: number;
 };
 
+export type CompositeStepOutput = {
+	postcardKey: string;
+	postcardUrl: string;
+	bytes: number;
+	elapsedMs: number;
+};
+
+export type StoreStepOutput = {
+	sessionId: string;
+	rowsWritten: number;
+};
+
 /**
  * Caricature pipeline.
  *
  * Step 4.1: bare skeleton (hello).
  * Step 4.2: moderate step using Llama 3.2 Vision.
- * Step 4.3 (this commit): generate step — runs FLUX.2 i2i on the selfie with
- *   the chosen scene's prompt, saves the result to R2.
+ * Step 4.3: generate step (FLUX.2 i2i) with retries.
+ * Step 4.4 (this commit): composite + store.
+ *   - composite: build the 1800x1200 postcard (caricature + watermark + QR
+ *     pointing at /p/<sessionId>), save to R2.
+ *   - store: upsert a sessions row in D1 with every artifact key.
  *
- *   The step is configured with 2 retries (exponential backoff) since FLUX
- *   calls can occasionally time out / 5xx during peak load.
- *
- * Upcoming steps will append composite / store / notify.
+ * Upcoming: print queue, email notify.
  */
 export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayload> {
 	async run(event: WorkflowEvent<CaricaturePayload>, step: WorkflowStep) {
-		const { sessionId, selfieKey, sceneId, note } = event.payload;
+		const { sessionId, selfieKey, sceneId, publicOrigin, note } = event.payload;
+		const instanceId = event.instanceId;
 
 		// Hello step is preserved for now so the skeleton test endpoint still works.
 		const hello = await step.do("hello", async () => {
@@ -152,6 +167,110 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 			},
 		);
 
-		return { hello, moderate, generate };
+		const composite: CompositeStepOutput = await step.do(
+			"composite",
+			{
+				retries: { limit: 2, delay: "2 seconds", backoff: "exponential" },
+				timeout: "1 minute",
+			},
+			async () => {
+				const started = Date.now();
+
+				const caricature = await this.env.BUCKET.get(generate.caricatureKey);
+				if (!caricature)
+					throw new Error(
+						`caricature not found in R2: ${generate.caricatureKey}`,
+					);
+				if (!caricature.body)
+					throw new Error(
+						`caricature has no body: ${generate.caricatureKey}`,
+					);
+
+				// QR url: prefer the explicit origin passed in payload, otherwise
+				// emit a relative path so the post-event pickup page still works
+				// even if the host moves.
+				const origin = publicOrigin?.replace(/\/$/, "") ?? "";
+				const postcardUrl = `${origin}/p/${sessionId}`;
+
+				const response = await buildPostcard(this.env, caricature.body, {
+					qrUrl: postcardUrl,
+				});
+				if (!response.ok)
+					throw new Error(
+						`postcard build failed: HTTP ${response.status}`,
+					);
+				const postcardBytes = new Uint8Array(await response.arrayBuffer());
+
+				const postcardKey = `runs/${sessionId}/postcard.jpg`;
+				await this.env.BUCKET.put(postcardKey, postcardBytes, {
+					httpMetadata: { contentType: "image/jpeg" },
+					customMetadata: {
+						sessionId,
+						sceneId: generate.sceneId,
+						sceneName: generate.sceneName,
+						postcardUrl,
+					},
+				});
+
+				const elapsedMs = Date.now() - started;
+				console.log(
+					`[caricature-workflow] composite session=${sessionId} bytes=${postcardBytes.byteLength} elapsedMs=${elapsedMs}`,
+				);
+
+				return {
+					postcardKey,
+					postcardUrl,
+					bytes: postcardBytes.byteLength,
+					elapsedMs,
+				};
+			},
+		);
+
+		const store: StoreStepOutput = await step.do(
+			"store",
+			{
+				retries: { limit: 3, delay: "1 second", backoff: "exponential" },
+				timeout: "30 seconds",
+			},
+			async () => {
+				// Upsert: a row may already exist (e.g. if the workflow was
+				// retried after the store step failed). ON CONFLICT replaces
+				// every artifact field with the latest values.
+				const result = await this.env.DB.prepare(
+					`INSERT INTO sessions
+						(id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
+					 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
+					 ON CONFLICT(id) DO UPDATE SET
+						status='completed',
+						scene_id=excluded.scene_id,
+						scene_name=excluded.scene_name,
+						selfie_key=excluded.selfie_key,
+						caricature_key=excluded.caricature_key,
+						postcard_key=excluded.postcard_key,
+						workflow_instance_id=excluded.workflow_instance_id,
+						completed_at=excluded.completed_at,
+						error_msg=NULL`,
+				)
+					.bind(
+						sessionId,
+						generate.sceneId,
+						generate.sceneName,
+						selfieKey,
+						generate.caricatureKey,
+						composite.postcardKey,
+						instanceId,
+					)
+					.run();
+
+				const rowsWritten = result.meta.changes ?? 0;
+				console.log(
+					`[caricature-workflow] store session=${sessionId} rowsWritten=${rowsWritten}`,
+				);
+
+				return { sessionId, rowsWritten };
+			},
+		);
+
+		return { hello, moderate, generate, composite, store };
 	}
 }

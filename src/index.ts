@@ -1,231 +1,22 @@
 import { Hono } from "hono";
-import QRCode from "qrcode";
 
 import { moderateImage } from "./lib/moderation";
 import { runFlux } from "./lib/flux";
 import { loadScenes, type Scene } from "./lib/scenes";
+import {
+	POSTCARD_H,
+	POSTCARD_W,
+	buildPostcard,
+	newPostcardId,
+} from "./lib/postcard";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// ----- Postcard dimensions (4x6 inches @ 300 DPI, landscape) -----
-const POSTCARD_W = 1800;
-const POSTCARD_H = 1200;
-// Watermark sized as a fraction of the postcard width
-const POSTCARD_WATERMARK_W = 540; // ~30% of postcard width
-const POSTCARD_WATERMARK_MARGIN = 56;
-// QR code sized for easy phone scanning at arm's length
-const POSTCARD_QR_W = 220;
-const POSTCARD_QR_MARGIN = 56;
-
-/**
- * Generates a short, URL-safe ID for a postcard (digital pickup URL).
- * 10 chars of base32, ~50 bits of entropy.
- */
-function newPostcardId(): string {
-	const bytes = new Uint8Array(8);
-	crypto.getRandomValues(bytes);
-	const alphabet = "abcdefghijkmnpqrstuvwxyz23456789"; // Crockford-ish, no 0/1/l/o
-	let s = "";
-	for (let i = 0; i < bytes.length; i++) {
-		s += alphabet[bytes[i] % alphabet.length];
-		if (s.length >= 10) break;
-	}
-	return s.slice(0, 10);
-}
-
-/**
- * Encodes a Uint8Array as a PNG file. Minimal "raw RGBA" encoder, no deflate
- * (uses zlib's stored/uncompressed blocks). Worker-safe — pure JS.
- */
-function encodePng(width: number, height: number, rgba: Uint8Array): Uint8Array {
-	const crcTable = (() => {
-		const t = new Uint32Array(256);
-		for (let n = 0; n < 256; n++) {
-			let c = n;
-			for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-			t[n] = c >>> 0;
-		}
-		return t;
-	})();
-	function crc32(buf: Uint8Array): number {
-		let c = 0xffffffff;
-		for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-		return (c ^ 0xffffffff) >>> 0;
-	}
-	function adler32(buf: Uint8Array): number {
-		let a = 1;
-		let b = 0;
-		for (let i = 0; i < buf.length; i++) {
-			a = (a + buf[i]) % 65521;
-			b = (b + a) % 65521;
-		}
-		return ((b << 16) | a) >>> 0;
-	}
-	function chunk(type: string, data: Uint8Array): Uint8Array {
-		const out = new Uint8Array(8 + data.length + 4);
-		const dv = new DataView(out.buffer);
-		dv.setUint32(0, data.length);
-		for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
-		out.set(data, 8);
-		const crcInput = new Uint8Array(4 + data.length);
-		for (let i = 0; i < 4; i++) crcInput[i] = type.charCodeAt(i);
-		crcInput.set(data, 4);
-		dv.setUint32(8 + data.length, crc32(crcInput));
-		return out;
-	}
-
-	// Build raw scanlines: each row prefixed with filter byte 0x00
-	const stride = width * 4;
-	const raw = new Uint8Array((stride + 1) * height);
-	for (let y = 0; y < height; y++) {
-		raw[(stride + 1) * y] = 0;
-		raw.set(rgba.subarray(y * stride, (y + 1) * stride), (stride + 1) * y + 1);
-	}
-
-	// zlib container with one uncompressed deflate block per chunk of <=65535 bytes
-	const blocks: number[] = [0x78, 0x01]; // zlib header (no compression, default window)
-	let pos = 0;
-	while (pos < raw.length) {
-		const len = Math.min(65535, raw.length - pos);
-		const last = pos + len === raw.length ? 1 : 0;
-		blocks.push(last); // BFINAL only, BTYPE=00 (stored)
-		blocks.push(len & 0xff, (len >> 8) & 0xff);
-		const nlen = ~len & 0xffff;
-		blocks.push(nlen & 0xff, (nlen >> 8) & 0xff);
-		for (let i = 0; i < len; i++) blocks.push(raw[pos + i]);
-		pos += len;
-	}
-	const adler = adler32(raw);
-	blocks.push((adler >>> 24) & 0xff, (adler >>> 16) & 0xff, (adler >>> 8) & 0xff, adler & 0xff);
-	const idat = new Uint8Array(blocks);
-
-	const ihdr = new Uint8Array(13);
-	const dv = new DataView(ihdr.buffer);
-	dv.setUint32(0, width);
-	dv.setUint32(4, height);
-	ihdr[8] = 8; // bit depth
-	ihdr[9] = 6; // color type RGBA
-	ihdr[10] = 0; // compression
-	ihdr[11] = 0; // filter
-	ihdr[12] = 0; // interlace
-
-	const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-	const ihdrChunk = chunk("IHDR", ihdr);
-	const idatChunk = chunk("IDAT", idat);
-	const iendChunk = chunk("IEND", new Uint8Array(0));
-
-	const total = sig.length + ihdrChunk.length + idatChunk.length + iendChunk.length;
-	const out = new Uint8Array(total);
-	let o = 0;
-	out.set(sig, o);
-	o += sig.length;
-	out.set(ihdrChunk, o);
-	o += ihdrChunk.length;
-	out.set(idatChunk, o);
-	o += idatChunk.length;
-	out.set(iendChunk, o);
-	return out;
-}
-
-/**
- * Generates a QR code rasterized as a PNG of `sizePx` x `sizePx`.
- * Uses the qrcode package's matrix output (Worker-safe) and our pure-JS PNG
- * encoder above. Black on white, no quiet-zone margin (we add it via `margin`).
- */
-function qrPng(text: string, sizePx: number): Uint8Array {
-	const qr = QRCode.create(text, { errorCorrectionLevel: "M" });
-	const modules = qr.modules;
-	const moduleSide = modules.size;
-	const quietMargin = 2; // modules of white border
-	const grid = moduleSide + quietMargin * 2;
-	const scale = Math.max(1, Math.floor(sizePx / grid));
-	const finalSide = grid * scale;
-
-	const rgba = new Uint8Array(finalSide * finalSide * 4);
-	// Fill with white
-	for (let i = 0; i < rgba.length; i += 4) {
-		rgba[i] = 255;
-		rgba[i + 1] = 255;
-		rgba[i + 2] = 255;
-		rgba[i + 3] = 255;
-	}
-
-	for (let y = 0; y < moduleSide; y++) {
-		for (let x = 0; x < moduleSide; x++) {
-			if (!modules.get(x, y)) continue;
-			const px0 = (x + quietMargin) * scale;
-			const py0 = (y + quietMargin) * scale;
-			for (let dy = 0; dy < scale; dy++) {
-				for (let dx = 0; dx < scale; dx++) {
-					const off = ((py0 + dy) * finalSide + (px0 + dx)) * 4;
-					rgba[off] = 0;
-					rgba[off + 1] = 0;
-					rgba[off + 2] = 0;
-					rgba[off + 3] = 255;
-				}
-			}
-		}
-	}
-
-	return encodePng(finalSide, finalSide, rgba);
-}
-
-/**
- * Builds a print-ready 1800x1200 postcard JPEG from any base image:
- *  - resizes/crops the base image to fill 1800x1200 (fit: cover)
- *  - composites the "I [logo] NY" watermark in the bottom-right corner
- *  - optionally composites a QR code in the bottom-left corner
- *
- * Returns the Response from Cloudflare Images binding directly.
- */
-async function buildPostcard(
-	env: Env,
-	baseStream: ReadableStream,
-	opts: { qrUrl?: string } = {},
-): Promise<Response> {
-	const wmReq = new Request("http://internal/watermark.png");
-	const wmResp = await env.ASSETS.fetch(wmReq);
-	if (!wmResp.ok || !wmResp.body) {
-		throw new Error("watermark asset not available");
-	}
-
-	let pipeline = env.IMAGES.input(baseStream).transform({
-		width: POSTCARD_W,
-		height: POSTCARD_H,
-		fit: "cover",
-	});
-
-	if (opts.qrUrl) {
-		const png = qrPng(opts.qrUrl, POSTCARD_QR_W);
-		const qrStream = new Response(png, {
-			headers: { "content-type": "image/png" },
-		}).body;
-		if (qrStream) {
-			pipeline = pipeline.draw(
-				env.IMAGES.input(qrStream).transform({ width: POSTCARD_QR_W }),
-				{
-					bottom: POSTCARD_QR_MARGIN,
-					left: POSTCARD_QR_MARGIN,
-					opacity: 1,
-				},
-			);
-		}
-	}
-
-	pipeline = pipeline.draw(
-		env.IMAGES.input(wmResp.body).transform({ width: POSTCARD_WATERMARK_W }),
-		{
-			bottom: POSTCARD_WATERMARK_MARGIN,
-			right: POSTCARD_WATERMARK_MARGIN,
-			opacity: 0.95,
-		},
-	);
-
-	const result = await pipeline.output({ format: "image/jpeg" });
-	return result.response();
-}
+// Postcard composition (constants, qrPng, encodePng, buildPostcard,
+// newPostcardId) lives in src/lib/postcard.ts so the workflow's composite
+// step can share it.
 
 // Moderation helpers are now in src/lib/moderation.ts (shared with workflows).
 
@@ -265,11 +56,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 4.3 &middot; Workflow: moderate + generate
+					Step 4.4 &middot; Workflow: full pipeline
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/test-workflow-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						⚡ Workflow: moderate + generate (selfie + scene → caricature) →
+						⚡ Full pipeline (selfie + scene → moderate → generate → postcard → store) →
 					</a>
 					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚙️ Trigger bare workflow (no input)
@@ -299,7 +90,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "4.3" });
+	return c.json({ status: "ok", step: "4.4" });
 });
 
 /**
@@ -347,13 +138,14 @@ app.get("/api/test-workflow/:id", async (c) => {
 app.get("/test-workflow-moderate", (c) => {
 	return c.html(
 		page(
-			"Workflow — Step 4.3",
+			"Workflow — Step 4.4",
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
-				<h1 class="text-3xl font-bold mb-2">Workflow: moderate + generate</h1>
+				<h1 class="text-3xl font-bold mb-2">Workflow: full pipeline</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
 					Upload a selfie + pick a scene. We'll stash the selfie in R2, kick off
-					a CaricatureWorkflow that runs <code>moderate</code> (Llama 3.2 Vision)
-					then <code>generate</code> (FLUX.2 i2i) with retries.
+					a CaricatureWorkflow that runs <code>moderate</code> → <code>generate</code>
+					→ <code>composite</code> → <code>store</code>, then show the finished
+					4×6 postcard inline.
 				</p>
 				<form id="wf-form" action="/api/test-workflow-moderate" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
 					<div>
@@ -450,8 +242,15 @@ app.post("/api/test-workflow-moderate", async (c) => {
 		},
 	});
 
+	const publicOrigin = new URL(c.req.url).origin;
 	const instance = await c.env.CARICATURE_WORKFLOW.create({
-		params: { sessionId, selfieKey, sceneId, note: "step-4.3-generate-test" },
+		params: {
+			sessionId,
+			selfieKey,
+			sceneId,
+			publicOrigin,
+			note: "step-4.4-full-pipeline-test",
+		},
 	});
 
 	const url = new URL(c.req.url);
@@ -486,6 +285,20 @@ app.get("/test-workflow-moderate/:id", (c) => {
 						<dt class="text-white/50">Elapsed</dt><dd id="wf-elapsed" class="text-white/80">0.0s</dd>
 					</dl>
 				</section>
+				<section id="wf-preview" class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6 hidden">
+					<h2 class="text-sm font-semibold text-white/60 mb-4">Artifacts</h2>
+					<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+						<figure>
+							<figcaption class="text-xs text-white/50 mb-1">Caricature</figcaption>
+							<img id="wf-caricature" alt="caricature" class="w-full rounded-xl bg-black/40 border border-white/10" />
+						</figure>
+						<figure>
+							<figcaption class="text-xs text-white/50 mb-1">Postcard (4×6 @ 300 DPI)</figcaption>
+							<img id="wf-postcard" alt="postcard" class="w-full rounded-xl bg-black/40 border border-white/10" />
+							<p id="wf-postcard-link" class="text-xs text-white/50 mt-2"></p>
+						</figure>
+					</div>
+				</section>
 				<section class="w-full mt-6 rounded-2xl bg-black/40 border border-white/10 p-4">
 					<h2 class="text-sm font-semibold text-white/60 mb-2">Raw status</h2>
 					<pre id="wf-raw" class="text-xs whitespace-pre-wrap break-words text-white/70">loading…</pre>
@@ -499,6 +312,10 @@ app.get("/test-workflow-moderate/:id", (c) => {
 						const elapsedEl = document.getElementById("wf-elapsed");
 						const startedEl = document.getElementById("wf-started");
 						const rawEl = document.getElementById("wf-raw");
+						const previewEl = document.getElementById("wf-preview");
+						const caricatureEl = document.getElementById("wf-caricature");
+						const postcardEl = document.getElementById("wf-postcard");
+						const postcardLinkEl = document.getElementById("wf-postcard-link");
 
 						const t0 = Date.now();
 						startedEl.textContent = new Date().toLocaleTimeString();
@@ -518,6 +335,19 @@ app.get("/test-workflow-moderate/:id", (c) => {
 							terminated:  "bg-red-500",
 						};
 
+						function showArtifacts(output) {
+							if (!output) return;
+							const caricatureKey = output.generate && output.generate.caricatureKey;
+							const postcardKey = output.composite && output.composite.postcardKey;
+							const postcardUrl = output.composite && output.composite.postcardUrl;
+							if (caricatureKey || postcardKey) previewEl.classList.remove("hidden");
+							if (caricatureKey) caricatureEl.src = "/api/run-img?key=" + encodeURIComponent(caricatureKey);
+							if (postcardKey) postcardEl.src = "/api/run-img?key=" + encodeURIComponent(postcardKey);
+							if (postcardUrl) {
+								postcardLinkEl.innerHTML = "QR target: <a class=\\"text-cf-orange hover:underline\\" href=\\"" + postcardUrl + "\\" target=\\"_blank\\" rel=\\"noopener\\">" + postcardUrl + "</a>";
+							}
+						}
+
 						async function poll() {
 							try {
 								const r = await fetch("/api/test-workflow/" + id);
@@ -526,6 +356,7 @@ app.get("/test-workflow-moderate/:id", (c) => {
 								labelEl.textContent = s;
 								pulseEl.className = "size-3 rounded-full " + (colorMap[s] || "bg-zinc-400") + (terminal.has(s) ? "" : " animate-pulse");
 								rawEl.textContent = JSON.stringify(j.status, null, 2);
+								if (j.status && j.status.output) showArtifacts(j.status.output);
 								if (terminal.has(s)) {
 									clearInterval(tickHandle);
 									const finalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -890,6 +721,28 @@ app.get("/api/scene-grid-img", async (c) => {
 });
 
 /**
+ * R2 image proxy constrained to the workflow `runs/` prefix.
+ * Used by the workflow status page to preview caricature + postcard, and
+ * by /p/:id to render the digital pickup postcard.
+ * GET /api/run-img?key=runs/<sessionId>/(caricature|postcard).(jpg|png)
+ */
+app.get("/api/run-img", async (c) => {
+	const key = c.req.query("key");
+	if (!key || !key.startsWith("runs/")) {
+		return c.json({ error: "invalid key" }, 400);
+	}
+	const obj = await c.env.BUCKET.get(key);
+	if (!obj) return c.json({ error: "not found", key }, 404);
+	return new Response(obj.body, {
+		headers: {
+			"content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
+			"content-length": String(obj.size),
+			"cache-control": "public, max-age=3600",
+		},
+	});
+});
+
+/**
  * Renders the moderation test form.
  * GET /test-moderate
  */
@@ -1184,22 +1037,42 @@ app.post("/api/test-postcard", async (c) => {
  * In a later step this will fetch the real caricature from R2 and offer
  * email opt-in. For now it just confirms QR scanning works end-to-end.
  */
-app.get("/p/:id", (c) => {
+app.get("/p/:id", async (c) => {
 	const id = c.req.param("id");
-	if (!/^[a-z2-9]{6,16}$/.test(id)) return c.notFound();
+	// Accept either the short slug (legacy test postcards from /test-postcard)
+	// OR a UUID (the workflow's sessionId, used by the real pipeline).
+	const isShortSlug = /^[a-z2-9]{6,16}$/.test(id);
+	const isUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id);
+	if (!isShortSlug && !isUuid) return c.notFound();
+
+	// For UUIDs (real workflow runs) we have a stored postcard we can show.
+	let postcardUrl: string | undefined;
+	if (isUuid) {
+		const postcardKey = `runs/${id}/postcard.jpg`;
+		const head = await c.env.BUCKET.head(postcardKey);
+		if (head) {
+			postcardUrl = `/api/run-img?key=${encodeURIComponent(postcardKey)}`;
+		}
+	}
+
+	const preview = postcardUrl
+		? `<img src="${postcardUrl}" alt="Your postcard" class="mx-auto rounded-2xl shadow-2xl border border-white/10 max-w-full" />
+			 <p class="text-white/60 mt-6 text-sm">High-resolution copy. In the final booth this will also offer an email opt-in for a digital download.</p>`
+		: `<img src="/cloudflare-logo.png" alt="" class="mx-auto h-16 w-auto mb-6 drop-shadow-[0_0_24px_rgba(246,130,31,0.5)]" />
+			 <p class="text-white/60 mt-6">
+				This is a placeholder. In the full booth, this page will let you
+				download a high-resolution digital copy and optionally drop your
+				email to get a copy sent.
+			 </p>`;
+
 	return c.html(
 		page(
-			`Your postcard — ${id}`,
+			`Your postcard — ${id.slice(0, 8)}`,
 			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
-				<div class="text-center max-w-md">
-					<img src="/cloudflare-logo.png" alt="" class="mx-auto h-16 w-auto mb-6 drop-shadow-[0_0_24px_rgba(246,130,31,0.5)]" />
-					<h1 class="text-3xl font-bold">You scanned a postcard!</h1>
-					<p class="text-white/60 mt-3">Postcard ID: <code class="text-cf-orange">${id}</code></p>
-					<p class="text-white/60 mt-6">
-						This is a placeholder. In the full booth, this page will let you
-						download a high-resolution digital copy and optionally drop your
-						email to get a copy sent.
-					</p>
+				<div class="text-center max-w-2xl">
+					<h1 class="text-3xl font-bold mb-2">You scanned a postcard!</h1>
+					<p class="text-white/60 mb-8">Postcard ID: <code class="text-cf-orange">${id}</code></p>
+					${preview}
 					<a href="/" class="mt-10 inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
 						See what we built
 					</a>
