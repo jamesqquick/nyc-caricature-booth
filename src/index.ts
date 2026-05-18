@@ -38,18 +38,137 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 2.1 &middot; Workers AI hello world
+					Step 2.2 &middot; Image-to-image with selfie
 				</div>
-				<a href="/api/test-ai" target="_blank" rel="noopener" class="mt-6 text-sm text-white/60 hover:text-white underline underline-offset-4 transition">
-					🖼️ Try the AI image generator →
-				</a>
+				<div class="mt-6 flex flex-col items-center gap-2">
+					<a href="/test-i2i" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						🪄 Try the selfie → caricature flow →
+					</a>
+					<a href="/api/test-ai" target="_blank" rel="noopener" class="text-xs text-white/40 hover:text-white/80 transition">
+						(or just the text-to-image test)
+					</a>
+				</div>
 			</main>`,
 		),
 	);
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "2.1" });
+	return c.json({ status: "ok", step: "2.2" });
+});
+
+/**
+ * Simple HTML test form for image-to-image generation.
+ * GET /test-i2i
+ */
+app.get("/test-i2i", (c) => {
+	return c.html(
+		page(
+			"Test image-to-image — Step 2.2",
+			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
+				<h1 class="text-3xl font-bold mb-2">Image-to-image test</h1>
+				<p class="text-white/60 mb-8">Upload a selfie + pick a scene. FLUX.2 will generate a caricature.</p>
+				<form action="/api/test-i2i" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
+					<div>
+						<label class="block text-sm font-medium mb-2">Selfie</label>
+						<input type="file" name="selfie" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
+					</div>
+					<div>
+						<label class="block text-sm font-medium mb-2">Scene</label>
+						<select name="scene_id" class="w-full rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
+							<option value="hot-dog-stand">🌭 Hot Dog Stand</option>
+							<option value="subway">🚇 Subway Platform</option>
+							<option value="central-park">🌳 Central Park</option>
+							<option value="broadway">🎭 Broadway</option>
+							<option value="times-square">🌆 Times Square</option>
+							<option value="brooklyn-bridge">🌉 Brooklyn Bridge</option>
+						</select>
+					</div>
+					<button type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">Generate caricature</button>
+					<p class="text-xs text-white/40">Takes ~5-15 seconds. The page will return the JPEG directly.</p>
+				</form>
+				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
+			</main>`,
+		),
+	);
+});
+
+/**
+ * Image-to-image generation: selfie -> caricature in chosen NYC scene.
+ * POST /api/test-i2i  (multipart: selfie=file, scene_id=string)
+ */
+app.post("/api/test-i2i", async (c) => {
+	const inForm = await c.req.formData();
+	const selfie = inForm.get("selfie");
+	const sceneId = String(inForm.get("scene_id") ?? "hot-dog-stand");
+
+	if (!(selfie instanceof File) || selfie.size === 0) {
+		return c.json({ error: "missing selfie file" }, 400);
+	}
+
+	// Lookup the scene prompt from KV
+	const raw = await c.env.CONFIG.get("scenes");
+	if (!raw) return c.json({ error: "scenes not configured" }, 500);
+	const scenes = JSON.parse(raw) as Array<{ id: string; prompt: string; name: string }>;
+	const scene = scenes.find((s) => s.id === sceneId);
+	if (!scene) return c.json({ error: `unknown scene_id: ${sceneId}` }, 400);
+
+	// Build multipart payload for Workers AI
+	const aiForm = new FormData();
+	aiForm.append("prompt", scene.prompt);
+	aiForm.append("width", "1024");
+	aiForm.append("height", "1024");
+	// Re-wrap the selfie as a Blob so we control the content type
+	const selfieBlob = new Blob([await selfie.arrayBuffer()], {
+		type: selfie.type || "image/jpeg",
+	});
+	aiForm.append("input_image_0", selfieBlob, selfie.name || "selfie.jpg");
+
+	const formResponse = new Response(aiForm);
+	const formStream = formResponse.body;
+	const formContentType =
+		formResponse.headers.get("content-type") ?? "multipart/form-data";
+
+	const started = Date.now();
+	const resp = (await c.env.AI.run("@cf/black-forest-labs/flux-2-klein-4b", {
+		multipart: {
+			body: formStream as ReadableStream,
+			contentType: formContentType,
+		},
+	})) as { image?: string } | unknown;
+	const elapsedMs = Date.now() - started;
+
+	if (
+		!resp ||
+		typeof resp !== "object" ||
+		!("image" in resp) ||
+		typeof resp.image !== "string"
+	) {
+		return c.json(
+			{ error: "unexpected AI response shape", got: resp, elapsedMs },
+			500,
+		);
+	}
+
+	const bytes = Uint8Array.from(atob(resp.image), (ch) => ch.charCodeAt(0));
+	const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+	const isPng =
+		bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+	const contentType = isJpeg
+		? "image/jpeg"
+		: isPng
+			? "image/png"
+			: "application/octet-stream";
+
+	return new Response(bytes, {
+		headers: {
+			"content-type": contentType,
+			"content-length": String(bytes.byteLength),
+			"x-elapsed-ms": String(elapsedMs),
+			"x-scene-id": scene.id,
+			"x-scene-name": scene.name,
+		},
+	});
 });
 
 /**
