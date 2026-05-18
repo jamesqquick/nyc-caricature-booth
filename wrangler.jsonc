@@ -34,6 +34,13 @@
 	"images": {
 		"binding": "IMAGES"
 	},
+	"workflows": [
+		{
+			"name": "caricature-workflow",
+			"binding": "CARICATURE_WORKFLOW",
+			"class_name": "CaricatureWorkflow"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}

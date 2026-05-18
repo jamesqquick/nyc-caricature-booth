@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import QRCode from "qrcode";
 
+export { CaricatureWorkflow } from "./workflows/caricature";
+
 const app = new Hono<{ Bindings: Env }>();
 
 type Scene = {
@@ -460,11 +462,14 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 3.3 &middot; QR codes on postcards
+					Step 4.1 &middot; Workflow skeleton
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/test-postcard" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						📮 Test 4×6 postcard format →
+					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						⚡ Trigger the caricature workflow →
+					</a>
+					<a href="/test-postcard" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						📮 4×6 postcard format with QR
 					</a>
 					<a href="/test-watermark" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						🏷️ Watermark overlay only
@@ -488,7 +493,44 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "3.3" });
+	return c.json({ status: "ok", step: "4.1" });
+});
+
+/**
+ * Triggers a new instance of the (bare) caricature workflow.
+ * GET /api/test-workflow?note=...
+ */
+app.get("/api/test-workflow", async (c) => {
+	const note = c.req.query("note") ?? undefined;
+	const sessionId = crypto.randomUUID();
+
+	const instance = await c.env.CARICATURE_WORKFLOW.create({
+		params: { sessionId, note },
+	});
+	const status = await instance.status();
+
+	return c.json({
+		ok: true,
+		sessionId,
+		instanceId: instance.id,
+		status,
+		next: `/api/test-workflow/${instance.id}`,
+	});
+});
+
+/**
+ * Returns the live status of a workflow instance.
+ * GET /api/test-workflow/:id
+ */
+app.get("/api/test-workflow/:id", async (c) => {
+	const id = c.req.param("id");
+	try {
+		const instance = await c.env.CARICATURE_WORKFLOW.get(id);
+		const status = await instance.status();
+		return c.json({ ok: true, instanceId: id, status });
+	} catch (err) {
+		return c.json({ error: "instance not found", details: String(err) }, 404);
+	}
 });
 
 /**
