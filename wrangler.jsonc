@@ -8,6 +8,12 @@
 		"directory": "./public",
 		"binding": "ASSETS"
 	},
+	"r2_buckets": [
+		{
+			"binding": "IMAGES",
+			"bucket_name": "nyc-booth-images"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}

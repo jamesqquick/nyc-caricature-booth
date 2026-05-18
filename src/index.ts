@@ -38,7 +38,7 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 0.3 &middot; Deployed to production
+					Step 1.1 &middot; R2 bucket bound
 				</div>
 			</main>`,
 		),
@@ -46,7 +46,61 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "0.3" });
+	return c.json({ status: "ok", step: "1.1" });
+});
+
+/**
+ * Test endpoint: uploads a hardcoded tiny PNG to R2.
+ * GET /api/test-upload
+ */
+app.get("/api/test-upload", async (c) => {
+	// 1x1 transparent PNG, base64 encoded
+	const tinyPngBase64 =
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+	const bytes = Uint8Array.from(atob(tinyPngBase64), (ch) => ch.charCodeAt(0));
+
+	const key = `test/${Date.now()}-tiny.png`;
+	await c.env.IMAGES.put(key, bytes, {
+		httpMetadata: { contentType: "image/png" },
+	});
+
+	return c.json({ ok: true, key, size: bytes.byteLength });
+});
+
+/**
+ * Test endpoint: lists the most recent R2 objects (for verification).
+ * GET /api/test-list
+ */
+app.get("/api/test-list", async (c) => {
+	const listing = await c.env.IMAGES.list({ limit: 10 });
+	return c.json({
+		count: listing.objects.length,
+		truncated: listing.truncated,
+		objects: listing.objects.map((obj) => ({
+			key: obj.key,
+			size: obj.size,
+			uploaded: obj.uploaded,
+		})),
+	});
+});
+
+/**
+ * Test endpoint: fetches a specific object back from R2 by key.
+ * GET /api/test-get?key=...
+ */
+app.get("/api/test-get", async (c) => {
+	const key = c.req.query("key");
+	if (!key) return c.json({ error: "missing ?key=" }, 400);
+
+	const obj = await c.env.IMAGES.get(key);
+	if (!obj) return c.json({ error: "not found", key }, 404);
+
+	return new Response(obj.body, {
+		headers: {
+			"content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
+			"content-length": String(obj.size),
+		},
+	});
 });
 
 export default app;
