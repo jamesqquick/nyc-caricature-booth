@@ -57,11 +57,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 5.1 &middot; Session DO (bare)
+					Step 5.2 &middot; Session DO state machine
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/test-session" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						🪪 Session DO playground (step 5.1) →
+						🪪 Session DO state machine (step 5.2) →
 					</a>
 					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚡ Full workflow pipeline (selfie + scene → postcard)
@@ -94,7 +94,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "5.1" });
+	return c.json({ status: "ok", step: "5.2" });
 });
 
 /**
@@ -167,7 +167,7 @@ function getSessionStub(env: Env, sessionId: string) {
 app.post("/api/test-session", async (c) => {
 	const sessionId = crypto.randomUUID();
 	const stub = getSessionStub(c.env, sessionId);
-	const state = await stub.setStatus("queued", sessionId);
+	const state = await stub.getState(sessionId);
 	return c.json({ ok: true, sessionId, state });
 });
 
@@ -184,35 +184,37 @@ app.get("/api/test-session/:id", async (c) => {
 });
 
 /**
- * Updates a session DO's status. Permissive in 5.1 (no transition validation
- * yet — that lands in 5.2).
- * POST /api/test-session/:id/status   body: { status }
+ * Advances the session's state machine to the requested status. Optional
+ * payload fields (sceneId, error, elapsedMs, etc.) are merged into state.
+ * POST /api/test-session/:id/status   body: { status, ...payload }
+ *
+ * Step 5.2: invalid transitions now return 409 with the allowed next states.
  */
 app.post("/api/test-session/:id/status", async (c) => {
 	const id = c.req.param("id");
 	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
 
-	// Accept JSON, form-urlencoded, multipart form-data, or even a ?status=
-	// query param so curl + the HTML form + fetch(FormData) all work.
+	// Accept JSON, form-urlencoded, multipart form-data, or ?status= query
+	// param so curl, the HTML form, and fetch(FormData) all work.
 	const ct = c.req.header("content-type") ?? "";
-	let status: unknown = c.req.query("status");
+	let parsed: Record<string, unknown> = {};
+	const qs = c.req.query("status");
+	if (qs) parsed.status = qs;
 
-	if (!status) {
+	if (!parsed.status) {
 		try {
 			if (ct.includes("application/json")) {
-				const body = (await c.req.json()) as { status?: unknown };
-				status = body?.status;
+				parsed = (await c.req.json()) as Record<string, unknown>;
 			} else if (
 				ct.includes("application/x-www-form-urlencoded") ||
 				ct.includes("multipart/form-data")
 			) {
 				const fd = await c.req.formData();
-				status = fd.get("status");
+				for (const [k, v] of fd.entries()) parsed[k] = v;
 			} else {
-				// Last resort: try to parse as text → maybe it's `status=xxx`.
 				const text = await c.req.text();
 				const m = text.match(/(?:^|&)status=([^&]+)/);
-				if (m) status = decodeURIComponent(m[1]);
+				if (m) parsed.status = decodeURIComponent(m[1]);
 			}
 		} catch (err) {
 			return c.json(
@@ -225,26 +227,82 @@ app.post("/api/test-session/:id/status", async (c) => {
 			);
 		}
 	}
+
+	const status = parsed.status;
 	if (
 		typeof status !== "string" ||
 		!VALID_SESSION_STATUSES.includes(status as SessionStatusName)
 	) {
 		return c.json(
-			{
-				error: "invalid status",
-				validStatuses: VALID_SESSION_STATUSES,
-			},
+			{ error: "invalid status", validStatuses: VALID_SESSION_STATUSES },
 			400,
 		);
 	}
 
+	const payload = {
+		sceneId: typeof parsed.sceneId === "string" ? parsed.sceneId : undefined,
+		sceneName:
+			typeof parsed.sceneName === "string" ? parsed.sceneName : undefined,
+		selfieKey:
+			typeof parsed.selfieKey === "string" ? parsed.selfieKey : undefined,
+		caricatureKey:
+			typeof parsed.caricatureKey === "string"
+				? parsed.caricatureKey
+				: undefined,
+		postcardKey:
+			typeof parsed.postcardKey === "string" ? parsed.postcardKey : undefined,
+		postcardUrl:
+			typeof parsed.postcardUrl === "string" ? parsed.postcardUrl : undefined,
+		error: typeof parsed.error === "string" ? parsed.error : undefined,
+		elapsedMs:
+			typeof parsed.elapsedMs === "string"
+				? Number(parsed.elapsedMs)
+				: typeof parsed.elapsedMs === "number"
+					? parsed.elapsedMs
+					: undefined,
+	};
+
 	const stub = getSessionStub(c.env, id);
-	const state = await stub.setStatus(status as SessionStatusName, id);
-	return c.json({ ok: true, sessionId: id, state });
+	try {
+		const state = await stub.markStep(
+			status as SessionStatusName,
+			payload,
+			id,
+		);
+		return c.json({ ok: true, sessionId: id, state });
+	} catch (err) {
+		const msg = String(err);
+		// InvalidTransitionError is thrown across RPC as a plain error; match
+		// on the message we know the DO produces.
+		if (msg.includes("invalid session transition")) {
+			return c.json(
+				{
+					error: msg.replace(/^Error: /, ""),
+					hint: "see TRANSITIONS table in src/session/session.ts",
+				},
+				409,
+			);
+		}
+		return c.json({ error: msg }, 500);
+	}
 });
 
 /**
- * Manual driver page for the SessionDO (step 5.1).
+ * Force-deletes a session DO's storage. The DO would normally self-delete
+ * 5 minutes after reaching a terminal state; this is the explicit override
+ * for testing.
+ * DELETE /api/test-session/:id
+ */
+app.delete("/api/test-session/:id", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
+	const stub = getSessionStub(c.env, id);
+	await stub.delete();
+	return c.json({ ok: true, sessionId: id, deleted: true });
+});
+
+/**
+ * Manual driver page for the SessionDO (step 5.2).
  * Click to create a session, then use the status form to drive its state.
  * GET /test-session       — landing / create
  * GET /test-session/:id   — drive an existing session
@@ -252,12 +310,13 @@ app.post("/api/test-session/:id/status", async (c) => {
 app.get("/test-session", (c) => {
 	return c.html(
 		page(
-			"Session DO — Step 5.1",
+			"Session DO — Step 5.2",
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Session Durable Object</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
-					One DO per caricature session, addressed by <code>idFromName(sessionId)</code>.
-					Click below to spin up a new one, then drive its status manually.
+					One DO per caricature session. Step 5.2 adds a validated state machine
+					(queued → moderating → generating → compositing → done; any → errored)
+					and self-deletes 5 minutes after reaching a terminal state.
 				</p>
 				<form id="new-session" action="/api/test-session" method="post" class="w-full max-w-md bg-white/5 rounded-2xl p-8 border border-white/10">
 					<button type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">
@@ -298,16 +357,43 @@ app.get("/test-session/:id", (c) => {
 				</section>
 
 				<section class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6">
-					<h2 class="text-sm font-semibold text-white/60 mb-4">Set status</h2>
-					<form id="status-form" class="flex gap-3">
-						<select name="status" class="flex-1 rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
-							${statusOptions}
-						</select>
-						<button type="submit" class="rounded-full bg-cf-orange px-5 py-2 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
-							Apply
-						</button>
+					<h2 class="text-sm font-semibold text-white/60 mb-4">Mark step (validated)</h2>
+					<form id="status-form" class="space-y-3">
+						<div class="flex gap-3">
+							<select name="status" class="flex-1 rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
+								${statusOptions}
+							</select>
+							<button type="submit" class="rounded-full bg-cf-orange px-5 py-2 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+								Apply
+							</button>
+						</div>
+						<details class="text-xs text-white/60">
+							<summary class="cursor-pointer hover:text-white">+ optional payload</summary>
+							<div class="mt-3 grid grid-cols-2 gap-2">
+								<input name="sceneId" placeholder="sceneId" class="rounded-lg bg-black/40 border border-white/20 px-3 py-1.5 text-white text-xs" />
+								<input name="sceneName" placeholder="sceneName" class="rounded-lg bg-black/40 border border-white/20 px-3 py-1.5 text-white text-xs" />
+								<input name="caricatureKey" placeholder="caricatureKey" class="rounded-lg bg-black/40 border border-white/20 px-3 py-1.5 text-white text-xs" />
+								<input name="postcardKey" placeholder="postcardKey" class="rounded-lg bg-black/40 border border-white/20 px-3 py-1.5 text-white text-xs" />
+								<input name="error" placeholder="error" class="rounded-lg bg-black/40 border border-white/20 px-3 py-1.5 text-white text-xs col-span-2" />
+								<input name="elapsedMs" type="number" placeholder="elapsedMs" class="rounded-lg bg-black/40 border border-white/20 px-3 py-1.5 text-white text-xs" />
+							</div>
+						</details>
 					</form>
 					<p id="status-msg" class="text-xs text-white/50 mt-3"></p>
+					<div class="mt-4 text-[11px] text-white/40 leading-relaxed">
+						Allowed transitions: queued → moderating → generating → compositing → done.
+						Any non-terminal state may also go directly to errored.
+					</div>
+				</section>
+
+				<section class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6">
+					<h2 class="text-sm font-semibold text-white/60 mb-2">Danger zone</h2>
+					<button id="delete-btn" class="rounded-full bg-red-600/80 hover:bg-red-500 px-5 py-2 text-sm font-semibold text-white transition">
+						Force-delete DO storage
+					</button>
+					<p class="text-[11px] text-white/40 mt-2">
+						Sessions self-delete 5 minutes after reaching done/errored. This is the explicit override.
+					</p>
 				</section>
 
 				<a href="/test-session" class="mt-8 text-sm text-white/60 hover:text-white">← new session</a>
@@ -319,24 +405,45 @@ app.get("/test-session/:id", (c) => {
 						const refreshEl = document.getElementById("refresh");
 						const formEl = document.getElementById("status-form");
 						const msgEl = document.getElementById("status-msg");
+						const deleteBtn = document.getElementById("delete-btn");
 
+						const statusSelect = formEl.querySelector('select[name="status"]');
 						async function refresh() {
 							const r = await fetch("/api/test-session/" + id);
 							const j = await r.json();
 							stateEl.textContent = JSON.stringify(j.state, null, 2);
+							if (j.state && j.state.status) statusSelect.value = j.state.status;
 						}
 						refreshEl.addEventListener("click", refresh);
 						formEl.addEventListener("submit", async function (e) {
 							e.preventDefault();
 							msgEl.textContent = "updating…";
 							const fd = new FormData(formEl);
+							// drop empty optional payload fields
+							for (const [k, v] of Array.from(fd.entries())) {
+								if (typeof v === "string" && v.trim() === "") fd.delete(k);
+							}
 							const r = await fetch("/api/test-session/" + id + "/status", {
 								method: "POST",
 								body: fd,
 							});
 							const j = await r.json();
-							msgEl.textContent = j.ok ? "✓ status set to " + j.state.status : "✗ " + (j.error || "error");
-							if (j.ok) stateEl.textContent = JSON.stringify(j.state, null, 2);
+							if (j.ok) {
+								msgEl.textContent = "✓ marked " + j.state.status;
+								stateEl.textContent = JSON.stringify(j.state, null, 2);
+								statusSelect.value = j.state.status;
+							} else if (r.status === 409) {
+								msgEl.textContent = "⛔ " + j.error;
+							} else {
+								msgEl.textContent = "✗ " + (j.error || "error");
+							}
+						});
+						deleteBtn.addEventListener("click", async function () {
+							if (!confirm("Force-delete this DO's storage?")) return;
+							const r = await fetch("/api/test-session/" + id, { method: "DELETE" });
+							const j = await r.json();
+							msgEl.textContent = j.ok ? "✓ deleted" : "✗ " + (j.error || "error");
+							refresh();
 						});
 						refresh();
 					})();
