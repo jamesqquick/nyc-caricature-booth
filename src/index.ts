@@ -68,14 +68,14 @@ app.get("/test-i2i", (c) => {
 			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Image-to-image test</h1>
 				<p class="text-white/60 mb-8">Upload a selfie + pick a scene. FLUX.2 will generate a caricature.</p>
-				<form action="/api/test-i2i" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
+				<form id="i2i-form" action="/api/test-i2i" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
 					<div>
 						<label class="block text-sm font-medium mb-2">Selfie</label>
-						<input type="file" name="selfie" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
+						<input id="i2i-selfie" type="file" name="selfie" accept="image/*" required class="block w-full text-sm text-white/80 file:mr-4 file:rounded-full file:border-0 file:bg-cf-orange file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black hover:file:bg-cf-orange-dark" />
 					</div>
 					<div>
 						<label class="block text-sm font-medium mb-2">Scene</label>
-						<select name="scene_id" class="w-full rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
+						<select id="i2i-scene" name="scene_id" class="w-full rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
 							<option value="hot-dog-stand">🌭 Hot Dog Stand</option>
 							<option value="subway">🚇 Subway Platform</option>
 							<option value="central-park">🌳 Central Park</option>
@@ -84,9 +84,59 @@ app.get("/test-i2i", (c) => {
 							<option value="brooklyn-bridge">🌉 Brooklyn Bridge</option>
 						</select>
 					</div>
-					<button type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">Generate caricature</button>
-					<p class="text-xs text-white/40">Takes ~5-15 seconds. The page will return the JPEG directly.</p>
+					<button id="i2i-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
+						<span data-label="idle">Generate caricature</span>
+						<span data-label="loading" class="hidden items-center gap-2">
+							<svg class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+								<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="3" />
+								<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+							</svg>
+							<span>Generating… this usually takes 2–10s</span>
+						</span>
+					</button>
+					<p id="i2i-hint" class="text-xs text-white/40">Takes ~5-15 seconds. The page will return the JPEG directly.</p>
 				</form>
+				<script>
+					(function () {
+						const form = document.getElementById("i2i-form");
+						const button = document.getElementById("i2i-submit");
+						const selfie = document.getElementById("i2i-selfie");
+						const scene = document.getElementById("i2i-scene");
+						const idleLabel = button.querySelector('[data-label="idle"]');
+						const loadingLabel = button.querySelector('[data-label="loading"]');
+						const hint = document.getElementById("i2i-hint");
+						let started = 0;
+						let tickHandle = null;
+
+						function setLoading(on) {
+							button.disabled = on;
+							selfie.disabled = on;
+							scene.disabled = on;
+							idleLabel.classList.toggle("hidden", on);
+							loadingLabel.classList.toggle("hidden", !on);
+							loadingLabel.classList.toggle("inline-flex", on);
+						}
+
+						form.addEventListener("submit", function () {
+							setLoading(true);
+							started = Date.now();
+							hint.textContent = "Elapsed: 0.0s";
+							tickHandle = setInterval(function () {
+								const s = ((Date.now() - started) / 1000).toFixed(1);
+								hint.textContent = "Elapsed: " + s + "s";
+							}, 100);
+						});
+
+						// If the user comes back via the bfcache (browser back button) reset state.
+						window.addEventListener("pageshow", function (e) {
+							if (e.persisted) {
+								setLoading(false);
+								if (tickHandle) clearInterval(tickHandle);
+								hint.textContent = "Takes ~5-15 seconds. The page will return the JPEG directly.";
+							}
+						});
+					})();
+				</script>
 				<a href="/" class="mt-8 text-sm text-white/60 hover:text-white">← back home</a>
 			</main>`,
 		),
