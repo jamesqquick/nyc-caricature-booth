@@ -20,19 +20,21 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 9 complete ✅
+## Current status — Phase 10 complete ✅
 
 Most recent commits:
 ```
-<TBD>    feat: DNP DS620A printer driver via CUPS/lp (step 8.6)
-9b5790f  feat: mock printer driver with Printer interface (step 8.5)
-82f19f7  feat: agent downloads postcard + writes print-ready PDF (step 8.4)
-0005ebe  refactor: pivot print system from CF Queue to D1 + Worker endpoints (step 8.3 revised)
-d39a580  feat: workflow enqueues print job after store step (step 8.2)
-e28943e  feat: add PRINT_QUEUE binding + HTTP pull consumer (step 8.1)
+a165a5b  feat(admin): force-reprint endpoint that bypasses idempotency
+20ec773  feat(admin): always show Retry print on completed rows
+38d4583  feat(admin): real toast notifications via Notyf CDN
+3b0a5b2  fix: unify admin timestamp formatting via client-side <time data-ts>
+bdda212  feat: admin manual controls — retry print, resend email, re-seed (step 10.4)
+9036f13  feat: admin stats panel + /api/admin/stats (step 10.3)
+62951d9  feat: admin dashboard live sessions table + JSON feed (step 10.2)
+171b100  feat: admin auth gate with signed cookie middleware (step 10.1)
 ```
 
-**Next up:** Phase 10 — Admin Dashboard.
+**Next up:** Phase 11 — Hardening & Polish.
 
 ### Phase 6 — complete kiosk flow
 
@@ -93,8 +95,11 @@ when the attendee taps "Print my postcard" on `/kiosk/done` (see gotcha #25).
   - `MockPrinter` — simulated delay + writes to `spool/` dir (default)
   - `DnpDs620Printer` — sends PDF to DNP DS620A via CUPS `lp` command
   Select via env: `PRINTER_DRIVER=mock|dnp`, `PRINTER_NAME=<CUPS name>`
-- **No auth on agent endpoints** — acceptable for event activation on a
-  private network. Phase 10 auth gate will cover this.
+- **No auth on agent endpoints** — `/api/print-agent/jobs` and
+  `/api/print-agent/jobs/:id/ack` remain unauthenticated even after Phase 10.
+  The admin middleware only gates `/admin/*` and `/api/admin/*`. Acceptable
+  for an event on a private network; if the booth ever runs over the open
+  internet, add a shared-secret header check on the agent endpoints.
 - **Test endpoint:** `GET /api/test-print-job?session=<id>` seeds a print
   job for any existing completed session (useful for dev/testing).
 
@@ -115,6 +120,40 @@ the QR on `/kiosk/done` or accessed from a shared link.
   nested `/p/foo/bar`
 - Print button on `/kiosk/done` is opt-in: `POST /api/kiosk/print` with
   idempotency + 2s status polling via `GET /api/kiosk/print/:jobId/status`
+
+### Phase 10 — admin dashboard ✅
+
+The `/admin` route is a staff-only dashboard for the event. Cookie-gated; the
+only secret it relies on is the `ADMIN_PASSWORD` Worker secret.
+
+- **Auth gate** — `src/lib/admin-auth.ts` mints `<timestampMs>.<hmac-sha256>`
+  tokens signed with the admin password. Cookie is `HttpOnly`, `Secure`,
+  `SameSite=Strict`, 24h `Max-Age`. Middleware on `/admin/*` (browser redirect
+  to `/admin/login`) and `/api/admin/*` (401 JSON). Rotating the secret
+  instantly invalidates every existing cookie.
+- **Live sessions table** — server-renders the last 30 sessions from D1
+  joined to their most recent `print_jobs` row via correlated subqueries.
+  Columns: short session id, status pill, scene, created, pipeline duration,
+  masked email (`jam***@example.com`), print pill, per-row actions.
+- **Stats panel** — six cards above the table (total, completed, errored,
+  avg pipeline, emails collected, postcards printed) plus a "Sessions by
+  scene" pill row. Three D1 statements run via `db.batch()`: aggregate
+  counts over `sessions` (`COUNT(CASE WHEN …)` + `AVG`), a single count
+  over `print_jobs`, and a `GROUP BY scene_id` breakdown.
+- **Manual controls** —
+  - `POST /api/admin/reprint/:id` — force a new print job (bypasses the
+    kiosk endpoint's idempotency check; see gotcha #27).
+  - `POST /api/admin/resend-email/:id` — re-fires `sendPostcardEmail()`
+    via `waitUntil` (stubbed body — see gotcha #26).
+  - `POST /api/admin/reseed-scenes` — writes the bundled `seed/scenes.json`
+    into KV. Bundle is captured at deploy time (see gotcha #29).
+  - Top-level "Seed test print job" link to existing `GET /api/test-print-job`.
+- **Auto-refresh** — both `/api/admin/sessions` and `/api/admin/stats`
+  polled every 10s and rendered into the same DOM as the initial paint.
+- **Toasts** — Notyf via CDN (see gotcha #28).
+- **Time formatting** — server emits `<time data-ts="<unix-secs>">`
+  placeholders; one client-side `fmtTs()` formats them in the viewer's
+  locale on load + after every poll, so there's never a format flip.
 
 ### Architectural pivot during Phase 5
 
@@ -172,12 +211,15 @@ Resource IDs:
 nyc-caricature-booth/
 ├── src/
 │   ├── index.ts              # Hono app, all test endpoints, page templates
+│   ├── env.d.ts              # Ambient Env augmentation for secrets (ADMIN_PASSWORD)
 │   ├── lib/
 │   │   ├── moderation.ts     # Llama 3.2 Vision moderation helper (shared)
 │   │   ├── flux.ts           # FLUX.2 klein 4B image-gen helper (shared)
 │   │   ├── scenes.ts         # Scene type + loadScenes / loadSceneById (KV)
 │   │   ├── postcard.ts       # 1800×1200 postcard composer + QR PNG encoder
-│   │   └── email.ts          # Postcard email helper (stubbed — see gotcha #26)
+│   │   ├── email.ts          # Postcard email helper (stubbed — see gotcha #26)
+│   │   ├── admin-auth.ts     # HMAC cookie signing + Hono auth middleware (10.1)
+│   │   └── admin-data.ts     # loadAdminSessions + loadAdminStats (10.2/10.3)
 │   ├── session/
 │   │   └── session.ts        # SessionDO (one DO per session, hibernating WS)
 │   ├── workflows/
@@ -244,7 +286,40 @@ npx wrangler kv key put --binding=CONFIG --remote scenes --path=seed/scenes.json
 # Print agent (run from print-agent/ directory)
 cd print-agent && cp .env.example .env  # defaults work out of the box
 npm install && npm start
+
+# Set or rotate the admin dashboard password
+npx wrangler secret put ADMIN_PASSWORD
+# (current value: see 1Password or local notes — not committed)
+
+# Verify the secret is set
+npx wrangler secret list
 ```
+
+---
+
+## Admin dashboard (Phase 10)
+
+Lives at **`/admin`**, password-gated. The cookie lasts 24h.
+
+- **Sign in:** `/admin/login` (password is the `ADMIN_PASSWORD` Worker secret).
+- **Sign out:** `/admin/logout` (top-right link clears the cookie).
+- **Auto-refresh:** the table + stats poll every 10s. The footer shows the
+  last refresh time in the viewer's locale.
+- **Per-row actions** (visible on completed sessions):
+  - 🖨️ **Retry print** — always queues a new physical print, even on already-printed
+    rows. Use this when a postcard jams, prints badly, or the attendee asks
+    for a second copy. Calls `POST /api/admin/reprint/:id` (unconditional —
+    NOT the idempotent kiosk endpoint, see gotcha #27).
+  - 📧 **Resend email** — re-fires the digital-copy email for sessions that
+    opted in. Currently a no-op in terms of actual send (email is stubbed —
+    see gotcha #26) but the wiring is complete.
+- **Top-level controls:**
+  - 🧪 **Seed test print job** — opens `/api/test-print-job` in a new tab.
+    Inserts a `pending` row against the most recent completed session;
+    the print agent picks it up on its next poll.
+  - ♻️ **Re-seed scenes** — pushes the bundled `seed/scenes.json` into KV.
+    Requires a `wrangler deploy` first if you've edited the JSON (see gotcha #29).
+- **Toasts:** Notyf via CDN. Slide-in from the bottom-right, click to dismiss.
 
 ---
 
@@ -266,6 +341,21 @@ npm install && npm start
 ### Big screen display (Phase 7 — live)
 - `GET /display` — gallery of last 8 completed postcards (30s polling, shimmer, QR)
 - `GET /api/display/feed` — JSON feed of last 8 completed sessions for client polling
+
+### Admin dashboard (Phase 10 — live)
+- `GET /admin/login` — password form (uses `page()` shell)
+- `POST /admin/login` — verify password, set signed cookie, redirect to `next`
+- `GET /admin/logout` — clear cookie, redirect to `/admin/login`
+- `GET /admin` — dashboard: stat cards, sessions-by-scene pills, last 30
+  sessions table with per-row actions
+- `GET /api/admin/sessions` — last 30 sessions joined to most-recent print
+  job; polled every 10s from `/admin`
+- `GET /api/admin/stats` — aggregate counts + AVG pipeline + scene breakdown
+- `POST /api/admin/reprint/:id` — force a fresh print job (no idempotency,
+  use this from staff tools, NOT `/api/kiosk/print`)
+- `POST /api/admin/resend-email/:id` — re-fire `sendPostcardEmail()` via
+  `waitUntil` for a session with an email on file
+- `POST /api/admin/reseed-scenes` — push bundled `seed/scenes.json` into KV
 
 ### Public landing
 - `GET /` — branded landing page with links to every test page
@@ -340,9 +430,13 @@ All test endpoints stay in place during development — they'll be cleaned up be
 21. **`/api/kiosk/qr` is origin-locked.** The `url` param must start with the Worker's own origin or the endpoint returns 403. This prevents it being used as an open QR-code proxy.
 22. **Print jobs use D1, not Cloudflare Queues.** A Queue was created in step 8.1 but we pivoted to D1-based `print_jobs` because: (a) the Mac mini agent is external and would need an API token to use the Queue HTTP pull API, (b) for a single-booth activation the Queue adds complexity without benefit, (c) D1 gives a persistent audit log for the admin dashboard. The Queue (`nyc-booth-print-queue`) still exists but is dormant — no producer binding, nothing writes to it.
 23. **The workflow's `store` step writes ONLY the session upsert** — no print_jobs INSERT anymore (changed during Phase 9.1 review). Originally batched both in a single `DB.batch()` call; now printing is user-initiated so the workflow only persists the session row. Idempotent via `ON CONFLICT` on retries.
-24. **Print agent endpoints are unauthenticated.** `/api/print-agent/jobs` and `/api/print-agent/jobs/:id/ack` have no auth gate. This is acceptable for an event activation on a private network, but should be locked down before any public deployment (Phase 10 auth gate will cover this).
+24. **Print agent endpoints stay unauthenticated.** `/api/print-agent/jobs` and `/api/print-agent/jobs/:id/ack` have no auth gate, and Phase 10's auth middleware does NOT cover them (only `/admin/*` and `/api/admin/*` are gated). Acceptable for an event activation on a private network. Before any public deployment add a shared-secret header check on the agent endpoints — the Mac mini agent can carry it in `.env`.
 25. **Printing is opt-in (`POST /api/kiosk/print`).** Attendees tap "Print my postcard" on `/kiosk/done`; only then does a `print_jobs` row get inserted. The endpoint is idempotent — existing pending/printing/printed jobs for the same session_id return `alreadyQueued: true` without re-inserting. Only `failed` jobs can be re-queued. Anyone who only wants the digital copy (QR + `/p/:id`) never produces a print_jobs row at all, which keeps the audit log honest about what was actually printed.
 26. **Email sending is stubbed.** The `send_email` binding (`env.EMAIL`) is wired and the `sendPostcardEmail` helper in `src/lib/email.ts` composes a full HTML + text email, but it currently logs to console instead of calling `env.EMAIL.send()`. To enable real sending: (a) onboard a domain to Cloudflare Email Service + add SPF/DKIM DNS records, (b) update `FROM_ADDRESS` in `src/lib/email.ts`, (c) uncomment the real send block and remove the stub. The email is fired via `waitUntil` on opt-in — failures don't block the API response.
+27. **Two print endpoints exist on purpose.** `POST /api/kiosk/print` is **idempotent** — only inserts a `print_jobs` row if no `pending`/`printing`/`printed` job exists for that session (only `failed` is re-queuable). That protects the public kiosk button from spam-tap duplicates. `POST /api/admin/reprint/:id` (Phase 10.4) is **unconditional** — always inserts a new row regardless of what's already there. Staff need this for physical jams, blurry copies, second postcards, or recovering when D1 says `printed` but the agent crashed mid-print. The admin "Retry print" button calls the admin endpoint, NOT the kiosk endpoint. Never wire admin UIs to `/api/kiosk/print`.
+28. **Admin cookie is `Secure`, so it won't be set on plain HTTP.** Local `wrangler dev` runs on `http://localhost:8787` by default; logging in there will appear to "work" (303 response) but the browser silently drops the `Secure` cookie and you'll be bounced back to `/admin/login`. Two workarounds: (a) run wrangler with HTTPS, or (b) temporarily flip the `Secure` flag in `src/lib/admin-auth.ts` for local dev. Production is fine — Workers always serves over HTTPS.
+29. **`seed/scenes.json` is imported into the Worker bundle**, not read at runtime. `src/index.ts` does `import scenesSeed from "../seed/scenes.json"` so the JSON is captured at build time and shipped inside the Worker. `POST /api/admin/reseed-scenes` writes that bundled copy into KV. Editing `seed/scenes.json` requires a `wrangler deploy` to take effect; running the admin "Re-seed scenes" button against an old deploy will write the old scenes. `tsconfig.json` has `resolveJsonModule: true` for the import to type-check.
+30. **Worker secrets aren't picked up by `wrangler types`.** `npx wrangler types` only generates bindings declared in `wrangler.jsonc`. Secrets set via `wrangler secret put` (like `ADMIN_PASSWORD`) need a manual TypeScript augmentation. `src/env.d.ts` declares `interface Env { ADMIN_PASSWORD: string }` and `tsconfig.json`'s `include` lists `src/**/*.d.ts` so it's picked up alongside the generated `worker-configuration.d.ts`. Re-running `wrangler types` won't wipe it because it lives in a separate file. Add future secrets the same way.
 
 ---
 
@@ -408,11 +502,11 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 9.3 ✅ Cloudflare Email integration (send_email binding + stubbed sender — see gotcha #26)
 - 9.4 ✅ QR verification (QR removed from printed postcard in 6.6; digital QR on /kiosk/done works end-to-end)
 
-### Phase 10 — Admin Dashboard
-- 10.1 Auth gate
-- 10.2 Live booth state
-- 10.3 Stats panel
-- 10.4 Manual controls
+### Phase 10 — Admin Dashboard ✅
+- 10.1 ✅ Auth gate (signed cookie + Hono middleware)
+- 10.2 ✅ Live booth state (last 30 sessions table + `/api/admin/sessions`)
+- 10.3 ✅ Stats panel (six stat cards + scene breakdown + `/api/admin/stats`)
+- 10.4 ✅ Manual controls (force reprint, resend email, re-seed scenes, seed test print job)
 
 ### Phase 11 — Hardening & Polish
 - 11.1 Error states
