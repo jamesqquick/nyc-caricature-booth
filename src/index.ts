@@ -133,7 +133,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "7.1" });
+	return c.json({ status: "ok", step: "7.2" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1350,15 +1350,14 @@ app.get("/kiosk/done", (c) => {
 });
 
 /**
- * Big Screen App — static gallery (step 7.1).
+ * Big Screen App — gallery with periodic refresh (steps 7.1 + 7.2).
  *
  * Renders the last 8 completed postcards from D1 as a grid for display on a
  * TV/monitor next to the booth. Uses the standard `page()` shell (not
  * `kioskPage` — this isn't a touch-locked iPad).
  *
- * No client-side polling yet — that lands in step 7.2 along with
- * `/api/display/feed`. This is a server-rendered snapshot; the page only
- * refreshes when someone reloads it.
+ * Client-side JS polls `/api/display/feed` every 30s and diffs by sessionId
+ * to avoid full re-renders.
  */
 app.get("/display", async (c) => {
 	const { results } = await c.env.DB.prepare(
@@ -1437,10 +1436,107 @@ app.get("/display", async (c) => {
 			</main>
 			<footer class="px-12 py-8 flex items-center justify-between border-t border-white/5 text-sm text-white/50">
 				<div>Built end-to-end on Cloudflare</div>
-				<div class="text-white/40">${results.length} postcard${results.length === 1 ? "" : "s"} shown</div>
-			</footer>`,
+				<div id="gallery-count" class="text-white/40">${results.length} postcard${results.length === 1 ? "" : "s"} shown</div>
+			</footer>
+			<script>
+			(function () {
+				var POLL_INTERVAL = 30000;
+				var gallery = document.getElementById("gallery");
+				var countEl = document.getElementById("gallery-count");
+				// Track which session IDs are currently rendered so we can diff.
+				var currentIds = ${JSON.stringify(results.map((r) => r.id))};
+
+				function formatAge(completedAt) {
+					if (!completedAt) return "just now";
+					var diff = Math.max(0, Math.floor(Date.now() / 1000) - completedAt);
+					if (diff < 60) return "just now";
+					if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+					if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+					return Math.floor(diff / 86400) + "d ago";
+				}
+
+				function buildCard(s) {
+					var name = s.sceneName || "Untitled scene";
+					var imgUrl = "/api/run-img?key=" + encodeURIComponent(s.postcardKey);
+					return '<article class="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 shadow-[0_0_24px_rgba(0,0,0,0.4)]">'
+						+ '<div class="aspect-[3/2] w-full overflow-hidden bg-black">'
+						+ '<img src="' + imgUrl + '" alt="' + name + ' postcard" class="h-full w-full object-cover" loading="lazy" />'
+						+ '</div>'
+						+ '<div class="flex items-center justify-between px-4 py-3">'
+						+ '<div class="text-base font-semibold">' + name + '</div>'
+						+ '<div class="text-xs uppercase tracking-widest text-white/50">' + formatAge(s.completedAt) + '</div>'
+						+ '</div></article>';
+				}
+
+				function buildEmpty() {
+					return '<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.02] py-24 text-center">'
+						+ '<div class="text-5xl">🗽</div>'
+						+ '<p class="mt-4 text-lg text-white/70">No postcards yet — be the first!</p>'
+						+ '<p class="mt-1 text-sm text-white/40">Walk over to the iPad to get started.</p>'
+						+ '</div>';
+				}
+
+				async function poll() {
+					try {
+						var res = await fetch("/api/display/feed");
+						if (!res.ok) return;
+						var data = await res.json();
+						var sessions = data.sessions || [];
+						var newIds = sessions.map(function (s) { return s.sessionId; });
+
+						// Quick diff — only re-render if the id list changed.
+						if (JSON.stringify(newIds) === JSON.stringify(currentIds)) return;
+						currentIds = newIds;
+
+						if (sessions.length === 0) {
+							gallery.innerHTML = buildEmpty();
+						} else {
+							gallery.innerHTML = sessions.map(buildCard).join("");
+						}
+						countEl.textContent = sessions.length + " postcard" + (sessions.length === 1 ? "" : "s") + " shown";
+					} catch (e) {
+						// Silently retry next interval.
+					}
+				}
+
+				setInterval(poll, POLL_INTERVAL);
+			})();
+			</script>`,
 		),
 	);
+});
+
+/**
+ * Big Screen feed endpoint (step 7.2).
+ *
+ * Returns the last 8 completed sessions as JSON for the /display page's
+ * polling loop. Shape: { sessions: [{ sessionId, sceneId, sceneName,
+ * postcardKey, completedAt }] }.
+ */
+app.get("/api/display/feed", async (c) => {
+	const { results } = await c.env.DB.prepare(
+		`SELECT id, scene_id, scene_name, postcard_key, completed_at
+		 FROM sessions
+		 WHERE status = 'completed' AND postcard_key IS NOT NULL
+		 ORDER BY completed_at DESC
+		 LIMIT 8`,
+	).all<{
+		id: string;
+		scene_id: string | null;
+		scene_name: string | null;
+		postcard_key: string;
+		completed_at: number | null;
+	}>();
+
+	return c.json({
+		sessions: results.map((r) => ({
+			sessionId: r.id,
+			sceneId: r.scene_id,
+			sceneName: r.scene_name,
+			postcardKey: r.postcard_key,
+			completedAt: r.completed_at,
+		})),
+	});
 });
 
 /**
