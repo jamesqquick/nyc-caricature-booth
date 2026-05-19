@@ -92,11 +92,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 6.4 &middot; Kiosk → workflow trigger
+					Step 6.5 &middot; Kiosk live status (WebSocket)
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/kiosk" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						📱 Kiosk: idle → capture → scene → review → workflow (step 6.4) →
+						📱 Kiosk: idle → capture → scene → review → live status → done (step 6.5) →
 					</a>
 					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚡ Full pipeline + live Session DO (step 5.4)
@@ -132,7 +132,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "6.4" });
+	return c.json({ status: "ok", step: "6.5" });
 });
 
 // ---------------------------------------------------------------------------
@@ -821,11 +821,25 @@ app.get("/kiosk/review", (c) => {
 });
 
 /**
- * Status placeholder (step 6.5 will replace this with the real kiosk-styled
- * live UI subscribing to /api/session/:sid/ws).
+ * Live kiosk status screen (step 6.5).
  *
- * For 6.4 it just confirms the workflow was minted and provides a link to
- * the existing dev status page so we can verify the run end-to-end.
+ * Subscribes to /api/session/:sid/ws and walks a 4-row stepper in lockstep
+ * with the SessionDO state machine:
+ *
+ *   queued / moderating  → "Checking your photo"
+ *   generating           → "Painting your caricature"  (the slow one)
+ *   compositing          → "Adding the postcard frame"
+ *   done                 → tick + auto-redirect to /kiosk/done after 500ms
+ *
+ * On `errored` we replace the stepper with a friendly error card and a
+ * 'Try again' CTA back to /kiosk. WebSocket disconnects auto-reconnect
+ * with exponential backoff; we only surface a disconnected state to the
+ * user after a grace window so brief blips don't cause UI flicker.
+ *
+ * Final state (postcardKey + postcardUrl + sceneName etc.) is stashed in
+ * sessionStorage under 'kiosk:done' before redirecting so /kiosk/done can
+ * render the postcard even after the DO self-deletes on its 5-min alarm.
+ *
  * GET /kiosk/status/:instanceId?session=<sid>
  */
 app.get("/kiosk/status/:instanceId", (c) => {
@@ -835,39 +849,371 @@ app.get("/kiosk/status/:instanceId", (c) => {
 	const sessionId =
 		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
 
+	// Without a sessionId we have nothing to subscribe to. Show a polite
+	// error instead of a broken stepper.
+	if (!sessionId) {
+		return c.html(
+			kioskPage(
+				"Missing session",
+				`<main class="min-h-[100dvh] w-full flex flex-col items-center justify-center px-8 text-center gap-6">
+					<div class="text-2xl font-semibold text-red-300">Missing session id</div>
+					<p class="text-sm text-white/60 max-w-md">This page can't track a postcard without ?session=&lt;id&gt;.</p>
+					<a href="/kiosk" class="inline-flex items-center justify-center rounded-full bg-cf-orange px-10 py-4 text-base font-bold text-black hover:bg-cf-orange-dark transition">Start over</a>
+				</main>`,
+			),
+			400,
+		);
+	}
+
 	return c.html(
 		kioskPage(
 			"Making your postcard",
-			`<main class="min-h-[100dvh] w-full flex flex-col">
+			`<main id="status-root" class="min-h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<a href="/kiosk" class="text-sm text-white/50 hover:text-white">← Start over</a>
-					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Working on it…</span>
-					<span class="w-24"></span>
+					<div class="flex items-center gap-2 text-white/50 text-xs uppercase tracking-[0.25em]">
+						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
+						<span>I 🧡 NY · Caricature Booth</span>
+					</div>
+					<div id="status-conn" class="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-white/30">
+						<span id="status-conn-dot" class="size-2 rounded-full bg-yellow-400 animate-pulse"></span>
+						<span id="status-conn-label">connecting…</span>
+					</div>
 				</header>
 
-				<section class="flex-1 flex flex-col items-center justify-center px-6 sm:px-8 text-center gap-6">
-					<div class="size-20 rounded-full border-4 border-cf-orange/30 border-t-cf-orange animate-spin"></div>
-					<div>
-						<h1 class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Making your postcard</h1>
-						<p class="mt-3 max-w-md text-base text-white/70">
-							This usually takes about 30 seconds. Real kiosk-styled live status
-							lands in step 6.5.
-						</p>
+				<!-- Working state: stepper + headline. Replaced wholesale on errored. -->
+				<section id="status-working" class="flex-1 min-h-0 flex flex-col items-center justify-center px-6 sm:px-8 gap-8">
+					<div class="text-center max-w-md">
+						<h1 id="status-headline" class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Making your postcard</h1>
+						<p id="status-subhead" class="mt-3 text-sm sm:text-base text-white/60">Hang tight — this usually takes about 30 seconds.</p>
 					</div>
 
-					<div class="bg-black/40 border border-white/10 rounded-2xl p-4 max-w-md w-full text-left text-xs text-white/70 space-y-2">
-						<div><span class="text-white/40">workflow instance:</span> <code class="text-cf-orange break-all">${instanceId}</code></div>
-						<div><span class="text-white/40">session:</span> <code class="text-cf-orange break-all">${sessionId ?? "(missing)"}</code></div>
-					</div>
-
-					${sessionId
-						? `<a href="/test-workflow-moderate/${instanceId}?session=${sessionId}"
-							class="inline-flex items-center justify-center rounded-full border border-white/30 px-8 py-3 text-sm text-white/80 hover:border-white/60 hover:text-white active:scale-[0.98] transition">
-							Open dev status page (verify the workflow)
-						</a>`
-						: ""}
+					<!--
+						Stepper. Each row has:
+						  - a leading marker (spinner / check / dim dot)
+						  - the friendly label
+						  - an optional hint that only shows on the active row
+					-->
+					<ol id="status-steps" class="w-full max-w-md flex flex-col gap-3 sm:gap-4">
+						${[
+							{ key: "check", label: "Checking your photo" },
+							{ key: "paint", label: "Painting your caricature", hint: "This is the slow one — about 20 seconds." },
+							{ key: "frame", label: "Adding the postcard frame" },
+							{ key: "ready", label: "Your postcard is ready" },
+						]
+							.map(
+								(s) => `<li data-step="${s.key}" class="flex items-start gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 sm:px-5 sm:py-4 transition">
+									<span class="step-marker shrink-0 mt-0.5 size-7 rounded-full border border-white/15 flex items-center justify-center text-xs text-white/40">·</span>
+									<div class="min-w-0 flex-1">
+										<div class="step-label text-base sm:text-lg font-semibold leading-tight text-white/50">${s.label}</div>
+										${s.hint ? `<div class="step-hint mt-1 text-xs text-white/40 hidden">${s.hint}</div>` : ""}
+									</div>
+								</li>`,
+							)
+							.join("\n")}
+					</ol>
 				</section>
-			</main>`,
+
+				<!-- Errored state: hidden until we receive status === 'errored'. -->
+				<section id="status-errored" class="flex-1 min-h-0 hidden flex-col items-center justify-center px-6 sm:px-8 gap-6 text-center">
+					<div class="size-20 rounded-full border-4 border-red-400/30 bg-red-500/10 flex items-center justify-center text-3xl" aria-hidden="true">⚠️</div>
+					<div class="max-w-md">
+						<h1 class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Something went wrong</h1>
+						<p id="status-err-msg" class="mt-3 text-base text-white/70">We couldn't finish your postcard.</p>
+					</div>
+					<button id="status-retry" class="inline-flex items-center justify-center rounded-full bg-cf-orange px-12 py-4 text-lg font-bold text-black shadow-[0_0_40px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
+						Try again
+					</button>
+					<p class="text-xs text-white/40 max-w-xs">Ask a staff member if it keeps happening.</p>
+				</section>
+
+				<footer class="shrink-0 px-6 pb-6 sm:pb-8 text-center text-[11px] uppercase tracking-[0.25em] text-white/25">
+					Generating on Cloudflare · Workers AI + Workflows
+				</footer>
+			</main>
+			<script>
+			(function () {
+				const sessionId = ${JSON.stringify(sessionId)};
+				const stepsRoot = document.getElementById("status-steps");
+				const headlineEl = document.getElementById("status-headline");
+				const subheadEl = document.getElementById("status-subhead");
+				const workingSection = document.getElementById("status-working");
+				const erroredSection = document.getElementById("status-errored");
+				const errMsgEl = document.getElementById("status-err-msg");
+				const retryBtn = document.getElementById("status-retry");
+				const connDot = document.getElementById("status-conn-dot");
+				const connLabel = document.getElementById("status-conn-label");
+
+				// Map each SessionDO status to a stepper index. queued and
+				// moderating both highlight the first step (queued is brief,
+				// users won't tell the difference and we'd rather not flash).
+				const STATUS_TO_STEP_INDEX = {
+					queued: 0,
+					moderating: 0,
+					generating: 1,
+					compositing: 2,
+					done: 3,
+				};
+				const STATUS_TO_HEADLINE = {
+					queued: "Getting started",
+					moderating: "Checking your photo",
+					generating: "Painting your caricature",
+					compositing: "Adding the postcard frame",
+					done: "Your postcard is ready",
+				};
+				const STATUS_TO_SUBHEAD = {
+					queued: "Hang tight — this usually takes about 30 seconds.",
+					moderating: "Making sure your photo is good to go.",
+					generating: "AI is painting your caricature — this is the slow part.",
+					compositing: "Watermark + QR code coming together.",
+					done: "Hold on while we hand it off…",
+				};
+
+				// Visual classes for the marker per state.
+				const MARKER_PAST = "bg-emerald-500 border-emerald-500 text-black";
+				const MARKER_ACTIVE = "bg-cf-orange/20 border-cf-orange text-cf-orange animate-pulse";
+				const MARKER_FUTURE = "border-white/15 text-white/40";
+
+				function applyStepper(activeIdx) {
+					const items = stepsRoot.querySelectorAll("li[data-step]");
+					items.forEach(function (li, idx) {
+						const marker = li.querySelector(".step-marker");
+						const label = li.querySelector(".step-label");
+						const hint = li.querySelector(".step-hint");
+						marker.classList.remove(
+							"bg-emerald-500", "border-emerald-500", "text-black",
+							"bg-cf-orange/20", "border-cf-orange", "text-cf-orange",
+							"animate-pulse",
+							"border-white/15", "text-white/40",
+						);
+						if (idx < activeIdx) {
+							marker.classList.add("bg-emerald-500", "border-emerald-500", "text-black");
+							marker.textContent = "✓";
+							label.classList.remove("text-white/50", "text-white");
+							label.classList.add("text-white/80");
+						} else if (idx === activeIdx) {
+							marker.classList.add("bg-cf-orange/20", "border-cf-orange", "text-cf-orange", "animate-pulse");
+							marker.textContent = "●";
+							label.classList.remove("text-white/50", "text-white/80");
+							label.classList.add("text-white");
+							if (hint) hint.classList.remove("hidden");
+						} else {
+							marker.classList.add("border-white/15", "text-white/40");
+							marker.textContent = "·";
+							label.classList.remove("text-white", "text-white/80");
+							label.classList.add("text-white/50");
+							if (hint) hint.classList.add("hidden");
+						}
+						// Hide the hint on non-active steps.
+						if (idx !== activeIdx && hint) hint.classList.add("hidden");
+					});
+				}
+
+				let didRedirect = false;
+				let lastState = null;
+
+				function handleDone(state) {
+					if (didRedirect) return;
+					didRedirect = true;
+					// Stash the final artifacts so /kiosk/done can render even
+					// after the DO self-deletes (5-min alarm).
+					try {
+						sessionStorage.setItem("kiosk:done", JSON.stringify({
+							sessionId: state.sessionId,
+							sceneId: state.sceneId,
+							sceneName: state.sceneName,
+							selfieKey: state.selfieKey,
+							caricatureKey: state.caricatureKey,
+							postcardKey: state.postcardKey,
+							postcardUrl: state.postcardUrl,
+							finishedAt: Date.now(),
+						}));
+					} catch (err) {
+						console.warn("could not stash done payload:", err);
+					}
+					// Show all-checks for the half-second before redirect.
+					applyStepper(STATUS_TO_STEP_INDEX.done);
+					headlineEl.textContent = STATUS_TO_HEADLINE.done;
+					subheadEl.textContent = STATUS_TO_SUBHEAD.done;
+					setTimeout(function () {
+						window.location.href = "/kiosk/done?session=" + encodeURIComponent(state.sessionId);
+					}, 500);
+				}
+
+				function handleErrored(state) {
+					workingSection.classList.add("hidden");
+					erroredSection.classList.remove("hidden");
+					erroredSection.classList.add("flex");
+					// Don't surface raw error text on the kiosk; show a friendly
+					// line but include a shortened detail for staff.
+					const raw = (state && state.error) ? String(state.error) : "";
+					const short = raw ? raw.slice(0, 120) : "";
+					errMsgEl.textContent = short
+						? "We couldn't finish your postcard. (" + short + ")"
+						: "We couldn't finish your postcard. Please try again.";
+				}
+
+				function applyState(state) {
+					if (!state) return;
+					lastState = state;
+					if (state.status === "done") {
+						handleDone(state);
+						return;
+					}
+					if (state.status === "errored") {
+						handleErrored(state);
+						return;
+					}
+					const idx = STATUS_TO_STEP_INDEX[state.status];
+					if (typeof idx !== "number") return;
+					applyStepper(idx);
+					if (STATUS_TO_HEADLINE[state.status]) headlineEl.textContent = STATUS_TO_HEADLINE[state.status];
+					if (STATUS_TO_SUBHEAD[state.status]) subheadEl.textContent = STATUS_TO_SUBHEAD[state.status];
+				}
+
+				retryBtn.addEventListener("click", function () {
+					try { sessionStorage.removeItem("kiosk:selfie"); } catch (e) { /* ignore */ }
+					try { sessionStorage.removeItem("kiosk:done"); } catch (e) { /* ignore */ }
+					window.location.href = "/kiosk";
+				});
+
+				// ----- WebSocket -----
+				let ws;
+				let backoff = 500;
+				let everConnected = false;
+				let connectedAt = 0;
+				const DISCONNECT_GRACE_MS = 5000;
+
+				function setConn(label, color, pulse) {
+					connLabel.textContent = label;
+					connDot.className = "size-2 rounded-full " + color + (pulse ? " animate-pulse" : "");
+				}
+
+				function connect() {
+					const proto = location.protocol === "https:" ? "wss:" : "ws:";
+					const url = proto + "//" + location.host + "/api/session/" + sessionId + "/ws";
+					setConn("connecting…", "bg-yellow-400", true);
+					ws = new WebSocket(url);
+					ws.addEventListener("open", function () {
+						everConnected = true;
+						connectedAt = Date.now();
+						backoff = 500;
+						setConn("live", "bg-emerald-500", false);
+					});
+					ws.addEventListener("message", function (e) {
+						if (e.data === "pong") return;
+						let msg;
+						try { msg = JSON.parse(e.data); } catch (err) {
+							console.error("bad ws frame:", e.data, err);
+							return;
+						}
+						if (msg && msg.type === "state") applyState(msg.state);
+						else if (msg && msg.type === "deleted") {
+							// DO storage cleared. If we already saw done we're
+							// fine — we'll have already redirected. Otherwise
+							// treat it as an error.
+							if (!didRedirect && (!lastState || lastState.status !== "done")) {
+								handleErrored({ error: "session expired before postcard finished" });
+							}
+						}
+					});
+					ws.addEventListener("close", function () {
+						// Don't flash 'disconnected' for brief reconnects. Only
+						// surface it after a grace window of being down.
+						const sinceOpen = Date.now() - connectedAt;
+						if (!everConnected || sinceOpen > DISCONNECT_GRACE_MS) {
+							setConn("reconnecting…", "bg-yellow-400", true);
+						}
+						if (didRedirect) return;
+						setTimeout(connect, backoff);
+						backoff = Math.min(backoff * 2, 10000);
+					});
+					ws.addEventListener("error", function (err) {
+						console.error("ws error:", err);
+					});
+				}
+
+				connect();
+			})();
+			</script>`,
+		),
+	);
+});
+
+/**
+ * Done placeholder (step 6.6 will replace with the proper "thanks" screen
+ * + QR back-to-pickup hint + auto-return-to-idle timer).
+ *
+ * Reads kiosk:done out of sessionStorage (set by the status screen on the
+ * final WS frame) and renders the postcard preview. Falls back to a
+ * helpful message if someone lands here directly without a fresh session.
+ *
+ * GET /kiosk/done?session=<sid>
+ */
+app.get("/kiosk/done", (c) => {
+	const sessionFromQs = c.req.query("session");
+	const sessionId =
+		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
+
+	return c.html(
+		kioskPage(
+			"Your postcard",
+			`<main class="min-h-[100dvh] w-full flex flex-col">
+				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
+					<div class="flex items-center gap-2 text-white/50 text-xs uppercase tracking-[0.25em]">
+						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
+						<span>I 🧡 NY · Caricature Booth</span>
+					</div>
+					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Done · placeholder</span>
+				</header>
+
+				<section class="flex-1 min-h-0 flex flex-col items-center justify-center px-6 sm:px-8 gap-6">
+					<div class="text-center max-w-md">
+						<h1 class="text-[clamp(2rem,6vw,3rem)] font-bold leading-tight">Your postcard is ready</h1>
+						<p id="done-sub" class="mt-3 text-base text-white/70">Take a screenshot or pick it up from the print queue.</p>
+					</div>
+
+					<figure class="w-full max-w-xl">
+						<img id="done-postcard" alt="your postcard" class="w-full rounded-2xl border border-white/10 bg-black/40 shadow-[0_0_60px_rgba(246,130,31,0.25)]" />
+						<figcaption id="done-meta" class="mt-3 text-center text-xs text-white/40">loading…</figcaption>
+					</figure>
+
+					<a href="/kiosk" class="inline-flex items-center justify-center rounded-full bg-cf-orange px-12 py-4 text-lg font-bold text-black shadow-[0_0_40px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
+						Start over
+					</a>
+					<p class="text-[11px] uppercase tracking-[0.25em] text-white/30">Real done screen + QR lands in step 6.6</p>
+				</section>
+			</main>
+			<script>
+			(function () {
+				const postcardEl = document.getElementById("done-postcard");
+				const metaEl = document.getElementById("done-meta");
+				const subEl = document.getElementById("done-sub");
+				const sessionId = ${JSON.stringify(sessionId)};
+
+				let payload = null;
+				try {
+					const raw = sessionStorage.getItem("kiosk:done");
+					if (raw) payload = JSON.parse(raw);
+				} catch (err) {
+					console.warn("bad kiosk:done payload:", err);
+				}
+
+				if (payload && payload.postcardKey) {
+					postcardEl.src = "/api/run-img?key=" + encodeURIComponent(payload.postcardKey);
+					metaEl.textContent = (payload.sceneName || payload.sceneId || "scene") + " · session " + (payload.sessionId || "").slice(0, 8) + "…";
+				} else if (sessionId) {
+					// No stashed payload but we have a session id (e.g. user
+					// reloaded). Best-effort: try the conventional R2 path.
+					postcardEl.src = "/api/run-img?key=" + encodeURIComponent("runs/" + sessionId + "/postcard.jpg");
+					metaEl.textContent = "session " + sessionId.slice(0, 8) + "…";
+					subEl.textContent = "Reloaded from R2. The full session preview lands in 6.6.";
+				} else {
+					postcardEl.classList.add("hidden");
+					metaEl.textContent = "No postcard found — start a new session.";
+					subEl.textContent = "We couldn't find a recent postcard for this device.";
+				}
+			})();
+			</script>`,
 		),
 	);
 });
