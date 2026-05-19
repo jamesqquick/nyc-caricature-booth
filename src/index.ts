@@ -92,11 +92,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 6.3 &middot; Kiosk scene picker
+					Step 6.4 &middot; Kiosk → workflow trigger
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/kiosk" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						📱 Kiosk: idle → capture → scene → review placeholder (step 6.3) →
+						📱 Kiosk: idle → capture → scene → review → workflow (step 6.4) →
 					</a>
 					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚡ Full pipeline + live Session DO (step 5.4)
@@ -132,7 +132,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "6.3" });
+	return c.json({ status: "ok", step: "6.4" });
 });
 
 // ---------------------------------------------------------------------------
@@ -187,6 +187,90 @@ app.post("/api/kiosk/selfie", async (c) => {
 		selfieKey,
 		size: buf.byteLength,
 		contentType: selfie.type || "image/jpeg",
+	});
+});
+
+/**
+ * Kicks off the caricature workflow from the kiosk review screen.
+ *
+ * The kiosk client already holds { sessionId, selfieKey, sceneId } in
+ * sessionStorage (from /api/kiosk/selfie + the scene picker), so this is
+ * a JSON POST rather than a form upload. We re-validate everything server-
+ * side because sessionStorage is untrusted client state.
+ *
+ * Returns the workflow `instanceId` + a relative status URL so the client
+ * can navigate. We don't 303 because the kiosk flow is JS-driven.
+ *
+ * POST /api/kiosk/start
+ * Body: { sessionId, selfieKey, sceneId }
+ * Response: { ok, instanceId, sessionId, statusUrl }
+ */
+app.post("/api/kiosk/start", async (c) => {
+	let body: { sessionId?: unknown; selfieKey?: unknown; sceneId?: unknown };
+	try {
+		body = await c.req.json();
+	} catch (err) {
+		return c.json(
+			{ error: "expected JSON body { sessionId, selfieKey, sceneId }", details: String(err) },
+			400,
+		);
+	}
+
+	const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+	const selfieKey = typeof body.selfieKey === "string" ? body.selfieKey : "";
+	const sceneId = typeof body.sceneId === "string" ? body.sceneId : "";
+
+	if (!UUID_RE.test(sessionId)) {
+		return c.json({ error: "invalid sessionId" }, 400);
+	}
+	// Lock the selfieKey shape down so a client can't point the workflow
+	// at an arbitrary R2 object (e.g. workflow-test/<other>/selfie.jpg).
+	const expectedPrefix = `kiosk/${sessionId}/`;
+	if (!selfieKey.startsWith(expectedPrefix)) {
+		return c.json(
+			{ error: `selfieKey must start with ${expectedPrefix}`, got: selfieKey },
+			400,
+		);
+	}
+	if (!sceneId) {
+		return c.json({ error: "missing sceneId" }, 400);
+	}
+
+	// Validate sceneId against KV.
+	let scenes: Scene[];
+	try {
+		scenes = await loadScenes(c.env);
+	} catch (err) {
+		return c.json({ error: "scenes unavailable", details: String(err) }, 500);
+	}
+	if (!scenes.some((s) => s.id === sceneId)) {
+		return c.json({ error: `unknown sceneId: ${sceneId}` }, 400);
+	}
+
+	// Validate the selfie actually exists in R2. head() is cheap and
+	// catches stale sessionStorage from before an R2 lifecycle sweep.
+	const head = await c.env.BUCKET.head(selfieKey);
+	if (!head) {
+		return c.json({ error: `selfie not found in R2: ${selfieKey}` }, 404);
+	}
+
+	const publicOrigin = new URL(c.req.url).origin;
+	const instance = await c.env.CARICATURE_WORKFLOW.create({
+		params: {
+			sessionId,
+			selfieKey,
+			sceneId,
+			publicOrigin,
+			note: "kiosk",
+		},
+	});
+
+	const statusUrl = `/kiosk/status/${instance.id}?session=${sessionId}`;
+	return c.json({
+		ok: true,
+		instanceId: instance.id,
+		sessionId,
+		statusUrl,
 	});
 });
 
@@ -602,52 +686,189 @@ app.get("/kiosk/scene", async (c) => {
 });
 
 /**
- * Review placeholder (step 6.4 will replace this with the workflow trigger).
- * For now it just renders the full sessionStorage handoff so we can verify
- * the scene tap round-tripped correctly.
+ * Review screen (step 6.4).
+ *
+ * Final confirmation before kicking off the workflow. Reads the full
+ * handoff out of sessionStorage:
+ *   { sessionId, selfieKey, ..., sceneId, sceneName }
+ * Bounces to /kiosk/capture if there's no selfie, or /kiosk/scene if
+ * there's no chosen scene.
+ *
+ * On "Make my postcard" we POST /api/kiosk/start with the handoff,
+ * navigate to the returned statusUrl, and clear sessionStorage so a
+ * page back-button doesn't accidentally re-trigger the workflow.
  * GET /kiosk/review
  */
 app.get("/kiosk/review", (c) => {
 	return c.html(
 		kioskPage(
-			"Review — coming in 6.4",
+			"Review your postcard",
 			`<main class="min-h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
 					<a href="/kiosk/scene" class="text-sm text-white/50 hover:text-white">← Pick different scene</a>
 					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 3 of 3 · Review</span>
 					<span class="w-32"></span>
 				</header>
-				<section class="flex-1 flex flex-col items-center justify-center px-6 sm:px-8 text-center">
-					<div class="text-[clamp(1.75rem,6vw,3rem)] font-bold leading-tight">Review</div>
-					<p class="mt-3 max-w-md text-base text-white/70">
-						Placeholder for step 6.4 (kiosk → workflow trigger). Below is the handoff
-						payload from the scene picker (stored in sessionStorage).
-					</p>
-					<pre id="handoff" class="mt-6 max-w-md w-full text-left bg-black/40 border border-white/10 rounded-2xl p-4 text-xs text-white/70 whitespace-pre-wrap break-words">loading…</pre>
-					<img id="preview" alt="" class="mt-6 max-h-56 rounded-2xl border border-white/10 hidden" />
+
+				<section class="flex-1 min-h-0 flex flex-col items-center px-6 sm:px-8 pt-2 pb-4 gap-4 sm:gap-6">
+					<div class="text-center max-w-md">
+						<h1 class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Ready to go?</h1>
+						<p class="mt-2 text-sm sm:text-base text-white/60">
+							We'll generate your caricature in about 30 seconds.
+						</p>
+					</div>
+
+					<!--
+						Selfie + scene side-by-side on landscape, stacked in portrait.
+						The selfie image and scene card mirror the visual hierarchy from
+						the picker so the user sees their choices reflected back.
+					-->
+					<div class="w-full max-w-2xl grid grid-cols-2 gap-3 sm:gap-4">
+						<div class="flex flex-col items-center gap-2">
+							<div class="text-xs uppercase tracking-[0.2em] text-white/40">Your selfie</div>
+							<div class="relative aspect-[3/4] w-full max-w-[260px] rounded-2xl overflow-hidden border border-white/10 bg-black/40">
+								<img id="rev-selfie" alt="" class="absolute inset-0 h-full w-full object-cover -scale-x-100" />
+							</div>
+						</div>
+						<div class="flex flex-col items-center gap-2">
+							<div class="text-xs uppercase tracking-[0.2em] text-white/40">Your scene</div>
+							<div class="aspect-[3/4] w-full max-w-[260px] rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5 flex flex-col items-center justify-center text-center">
+								<div id="rev-scene-emoji" class="text-6xl sm:text-7xl leading-none" aria-hidden="true">·</div>
+								<div id="rev-scene-name" class="mt-3 text-base sm:text-lg font-semibold leading-tight">Loading…</div>
+							</div>
+						</div>
+					</div>
+
+					<button id="rev-go" disabled
+						class="mt-2 inline-flex items-center justify-center rounded-full bg-cf-orange px-12 py-4 sm:py-5 text-lg sm:text-xl font-bold text-black shadow-[0_0_40px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition">
+						Make my postcard
+					</button>
+					<p id="rev-status" class="text-center text-[11px] sm:text-xs text-white/40 min-h-[1rem]"></p>
 				</section>
 			</main>
 			<script>
 			(function () {
-				const handoffEl = document.getElementById("handoff");
-				const previewEl = document.getElementById("preview");
+				const selfieEl = document.getElementById("rev-selfie");
+				const emojiEl = document.getElementById("rev-scene-emoji");
+				const nameEl = document.getElementById("rev-scene-name");
+				const goBtn = document.getElementById("rev-go");
+				const statusEl = document.getElementById("rev-status");
+
 				const raw = sessionStorage.getItem("kiosk:selfie");
 				if (!raw) {
-					handoffEl.textContent = "(no kiosk:selfie in sessionStorage — go back to /kiosk/capture)";
+					window.location.replace("/kiosk/capture");
 					return;
 				}
+				let data;
 				try {
-					const data = JSON.parse(raw);
-					handoffEl.textContent = JSON.stringify(data, null, 2);
-					if (data.selfieKey) {
-						previewEl.src = "/api/run-img?key=" + encodeURIComponent(data.selfieKey);
-						previewEl.classList.remove("hidden");
-					}
+					data = JSON.parse(raw);
+					if (!data || !data.sessionId || !data.selfieKey) throw new Error("incomplete payload");
 				} catch (err) {
-					handoffEl.textContent = "(invalid kiosk:selfie payload): " + String(err);
+					sessionStorage.removeItem("kiosk:selfie");
+					window.location.replace("/kiosk/capture");
+					return;
 				}
+				if (!data.sceneId) {
+					window.location.replace("/kiosk/scene");
+					return;
+				}
+
+				selfieEl.src = "/api/run-img?key=" + encodeURIComponent(data.selfieKey);
+				nameEl.textContent = data.sceneName || data.sceneId;
+
+				// Fetch /api/scenes to get the emoji (we only stash sceneName client-
+				// side, not emoji, to keep sessionStorage small). Best-effort —
+				// failure just leaves the placeholder dot.
+				fetch("/api/scenes")
+					.then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("scenes fetch failed")); })
+					.then(function (scenes) {
+						if (!Array.isArray(scenes)) return;
+						const scene = scenes.find(function (s) { return s && s.id === data.sceneId; });
+						if (scene && scene.emoji) emojiEl.textContent = scene.emoji;
+					})
+					.catch(function (err) { console.warn("scenes lookup failed:", err); });
+
+				goBtn.disabled = false;
+
+				goBtn.addEventListener("click", async function () {
+					goBtn.disabled = true;
+					statusEl.textContent = "Starting your postcard…";
+					try {
+						const r = await fetch("/api/kiosk/start", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({
+								sessionId: data.sessionId,
+								selfieKey: data.selfieKey,
+								sceneId: data.sceneId,
+							}),
+						});
+						const j = await r.json();
+						if (!r.ok || !j.ok) throw new Error(j.error || "start failed");
+						// Clear handoff state — the back button shouldn't be able
+						// to re-fire the workflow with the same selfie/scene.
+						sessionStorage.removeItem("kiosk:selfie");
+						window.location.href = j.statusUrl;
+					} catch (err) {
+						console.error(err);
+						statusEl.textContent = "✗ " + (err && err.message ? err.message : String(err));
+						goBtn.disabled = false;
+					}
+				});
 			})();
 			</script>`,
+		),
+	);
+});
+
+/**
+ * Status placeholder (step 6.5 will replace this with the real kiosk-styled
+ * live UI subscribing to /api/session/:sid/ws).
+ *
+ * For 6.4 it just confirms the workflow was minted and provides a link to
+ * the existing dev status page so we can verify the run end-to-end.
+ * GET /kiosk/status/:instanceId?session=<sid>
+ */
+app.get("/kiosk/status/:instanceId", (c) => {
+	const instanceId = c.req.param("instanceId");
+	if (!UUID_RE.test(instanceId)) return c.notFound();
+	const sessionFromQs = c.req.query("session");
+	const sessionId =
+		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
+
+	return c.html(
+		kioskPage(
+			"Making your postcard",
+			`<main class="min-h-[100dvh] w-full flex flex-col">
+				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
+					<a href="/kiosk" class="text-sm text-white/50 hover:text-white">← Start over</a>
+					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Working on it…</span>
+					<span class="w-24"></span>
+				</header>
+
+				<section class="flex-1 flex flex-col items-center justify-center px-6 sm:px-8 text-center gap-6">
+					<div class="size-20 rounded-full border-4 border-cf-orange/30 border-t-cf-orange animate-spin"></div>
+					<div>
+						<h1 class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Making your postcard</h1>
+						<p class="mt-3 max-w-md text-base text-white/70">
+							This usually takes about 30 seconds. Real kiosk-styled live status
+							lands in step 6.5.
+						</p>
+					</div>
+
+					<div class="bg-black/40 border border-white/10 rounded-2xl p-4 max-w-md w-full text-left text-xs text-white/70 space-y-2">
+						<div><span class="text-white/40">workflow instance:</span> <code class="text-cf-orange break-all">${instanceId}</code></div>
+						<div><span class="text-white/40">session:</span> <code class="text-cf-orange break-all">${sessionId ?? "(missing)"}</code></div>
+					</div>
+
+					${sessionId
+						? `<a href="/test-workflow-moderate/${instanceId}?session=${sessionId}"
+							class="inline-flex items-center justify-center rounded-full border border-white/30 px-8 py-3 text-sm text-white/80 hover:border-white/60 hover:text-white active:scale-[0.98] transition">
+							Open dev status page (verify the workflow)
+						</a>`
+						: ""}
+				</section>
+			</main>`,
 		),
 	);
 });
