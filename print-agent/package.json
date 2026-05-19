@@ -8,6 +8,8 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
+		"dotenv": "^17.4.2",
+		"pdf-lib": "^1.17.1",
 		"tsx": "^4.19.0"
 	},
 	"devDependencies": {

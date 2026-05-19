@@ -133,7 +133,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "8.3-d1" });
+	return c.json({ status: "ok", step: "8.4" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1596,6 +1596,36 @@ app.post("/api/print-agent/jobs/:id/ack", async (c) => {
 	}
 
 	return c.json({ ok: true, jobId, status: body.status });
+});
+
+/**
+ * Test endpoint: seed a print job for an existing completed session.
+ * GET /api/test-print-job?session=<sessionId>
+ * If no session param, picks the most recent completed session.
+ */
+app.get("/api/test-print-job", async (c) => {
+	const sessionId = c.req.query("session");
+	const origin = new URL(c.req.url).origin;
+
+	const row = sessionId
+		? await c.env.DB.prepare(
+				"SELECT id, postcard_key, scene_name FROM sessions WHERE id = ? AND status = 'completed'",
+			)
+				.bind(sessionId)
+				.first<{ id: string; postcard_key: string; scene_name: string }>()
+		: await c.env.DB.prepare(
+				"SELECT id, postcard_key, scene_name FROM sessions WHERE status = 'completed' AND postcard_key IS NOT NULL ORDER BY completed_at DESC LIMIT 1",
+			).first<{ id: string; postcard_key: string; scene_name: string }>();
+
+	if (!row) return c.json({ error: "no completed session found" }, 404);
+
+	await c.env.DB.prepare(
+		"INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name) VALUES (?, ?, ?, ?)",
+	)
+		.bind(row.id, row.postcard_key, `${origin}/p/${row.id}`, row.scene_name)
+		.run();
+
+	return c.json({ ok: true, sessionId: row.id, postcardKey: row.postcard_key, sceneName: row.scene_name });
 });
 
 /**

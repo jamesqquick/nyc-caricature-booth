@@ -1,5 +1,11 @@
+import "dotenv/config";
+import { writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { fetchJobs, ackJob } from "./queue.js";
+import { buildPrintPdf } from "./pdf.js";
 import type { AgentConfig, PrintJob } from "./types.js";
+
+const OUTPUT_DIR = join(import.meta.dirname ?? ".", "..", "output");
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -23,15 +29,37 @@ function loadConfig(): AgentConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Job handler (stub — real logic added in steps 8.4–8.6)
+// Job handler
 // ---------------------------------------------------------------------------
+
+/** Download the postcard JPEG from the Worker's R2 proxy. */
+async function downloadPostcard(config: AgentConfig, postcardKey: string): Promise<Uint8Array> {
+	const url = `${config.workerUrl}/api/run-img?key=${encodeURIComponent(postcardKey)}`;
+	const res = await fetch(url);
+	if (!res.ok) {
+		throw new Error(`Failed to download postcard: HTTP ${res.status}`);
+	}
+	return new Uint8Array(await res.arrayBuffer());
+}
 
 async function handleJob(config: AgentConfig, job: PrintJob): Promise<void> {
 	console.log(
 		`  [job] id=${job.id} session=${job.session_id} scene="${job.scene_name}" postcard=${job.postcard_key}`,
 	);
-	// TODO (8.4): download postcard image from Worker
-	// TODO (8.4): convert to print-ready PDF
+
+	// 1. Download postcard JPEG
+	const jpegBytes = await downloadPostcard(config, job.postcard_key);
+	console.log(`  [download] ${jpegBytes.byteLength} bytes`);
+
+	// 2. Wrap in print-ready 4×6" PDF
+	const pdfBytes = await buildPrintPdf(jpegBytes);
+
+	// 3. Save PDF to output directory
+	await mkdir(OUTPUT_DIR, { recursive: true });
+	const pdfPath = join(OUTPUT_DIR, `${job.session_id}.pdf`);
+	await writeFile(pdfPath, pdfBytes);
+	console.log(`  [pdf] written to ${pdfPath} (${pdfBytes.byteLength} bytes)`);
+
 	// TODO (8.5): send to mock printer driver
 	// TODO (8.6): send to real printer
 }
