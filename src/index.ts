@@ -133,7 +133,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "7.2" });
+	return c.json({ status: "ok", step: "7.3" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1409,18 +1409,19 @@ app.get("/display", async (c) => {
 	return c.html(
 		page(
 			"I 🧡 NY — Gallery",
-			`<header class="px-12 pt-10 pb-8 flex items-center justify-between">
-				<div class="flex items-center gap-3 text-sm uppercase tracking-widest text-white/60">
-					<img src="/cloudflare-logo.png" alt="" class="h-6 w-6" />
-					<span>Cloudflare &middot; NY Tech Week 2026</span>
+			`<div class="display-shimmer fixed inset-0 pointer-events-none" aria-hidden="true"></div>
+			<header class="relative px-12 pt-10 pb-8 flex items-center justify-between">
+				<div class="text-sm uppercase tracking-widest text-white/60">
+					NY Tech Week 2026
 				</div>
+				<img src="/api/kiosk/qr?url=${encodeURIComponent("https://nyc-caricature-booth.examples.workers.dev")}" alt="QR code — scan to visit" class="h-24 w-24 rounded" />
 				<div class="flex items-center gap-4 text-4xl font-black leading-none">
 					<span>I</span>
-					<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-10 w-auto drop-shadow-[0_0_18px_rgba(246,130,31,0.55)]" />
+					<img src="/cloudflare-logo.png" alt="Cloudflare" class="display-glow h-10 w-auto" />
 					<span>NY</span>
 				</div>
 			</header>
-			<main class="px-12 pb-12">
+			<main class="relative px-12 pb-12">
 				<div class="mb-8 flex items-end justify-between">
 					<div>
 						<h1 class="text-5xl md:text-6xl font-black tracking-tight">Fresh from the booth</h1>
@@ -1434,15 +1435,16 @@ app.get("/display", async (c) => {
 					${results.length === 0 ? empty : cards}
 				</section>
 			</main>
-			<footer class="px-12 py-8 flex items-center justify-between border-t border-white/5 text-sm text-white/50">
-				<div>Built end-to-end on Cloudflare</div>
-				<div id="gallery-count" class="text-white/40">${results.length} postcard${results.length === 1 ? "" : "s"} shown</div>
+			<footer class="relative px-12 py-8 flex items-center justify-center border-t border-white/5">
+				<div class="inline-flex items-center gap-3 rounded-full border border-cf-orange/30 bg-cf-orange/10 px-5 py-2.5 text-sm font-medium text-cf-orange">
+					<img src="/cloudflare-logo.png" alt="" class="h-5 w-auto" />
+					<span>Built end-to-end on Cloudflare</span>
+				</div>
 			</footer>
 			<script>
 			(function () {
 				var POLL_INTERVAL = 30000;
 				var gallery = document.getElementById("gallery");
-				var countEl = document.getElementById("gallery-count");
 				// Track which session IDs are currently rendered so we can diff.
 				var currentIds = ${JSON.stringify(results.map((r) => r.id))};
 
@@ -1493,7 +1495,6 @@ app.get("/display", async (c) => {
 						} else {
 							gallery.innerHTML = sessions.map(buildCard).join("");
 						}
-						countEl.textContent = sessions.length + " postcard" + (sessions.length === 1 ? "" : "s") + " shown";
 					} catch (e) {
 						// Silently retry next interval.
 					}
