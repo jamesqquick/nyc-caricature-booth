@@ -1053,11 +1053,13 @@ app.get("/kiosk/status/:instanceId", (c) => {
 				function handleDone(state) {
 					if (didRedirect) return;
 					didRedirect = true;
-					// Stash the final artifacts so /kiosk/done can render even
-					// after the DO self-deletes (5-min alarm).
+					// Always use the server-injected sessionId (confirmed UUID from
+					// ?session=) rather than state.sessionId from the WS frame,
+					// which can be "(unset)" if the DO seeded before markStep fired.
+					const sid = sessionId || state.sessionId;
 					try {
 						sessionStorage.setItem("kiosk:done", JSON.stringify({
-							sessionId: state.sessionId,
+							sessionId: sid,
 							sceneId: state.sceneId,
 							sceneName: state.sceneName,
 							selfieKey: state.selfieKey,
@@ -1069,12 +1071,11 @@ app.get("/kiosk/status/:instanceId", (c) => {
 					} catch (err) {
 						console.warn("could not stash done payload:", err);
 					}
-					// Show all-checks for the half-second before redirect.
 					applyStepper(STATUS_TO_STEP_INDEX.done);
 					headlineEl.textContent = STATUS_TO_HEADLINE.done;
 					subheadEl.textContent = STATUS_TO_SUBHEAD.done;
 					setTimeout(function () {
-						window.location.href = "/kiosk/done?session=" + encodeURIComponent(state.sessionId);
+						window.location.href = "/kiosk/done?session=" + encodeURIComponent(sid);
 					}, 500);
 				}
 
@@ -1217,79 +1218,75 @@ app.get("/kiosk/done", (c) => {
 		kioskPage(
 			"Your postcard is ready",
 			`<main id="done-root" class="min-h-[100dvh] w-full flex flex-col" style="touch-action:manipulation;">
-				<!--
-					Touch anywhere on the main element resets the idle countdown.
-					We attach the listener in JS rather than relying on a click
-					handler on every child so there are no holes.
-				-->
 				<header class="shrink-0 px-6 pt-4 sm:pt-6 pb-2 flex items-center justify-between">
 					<div class="flex items-center gap-2 text-white/50 text-xs uppercase tracking-[0.25em]">
 						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
 						<span>I 🧡 NY · Caricature Booth</span>
 					</div>
-					<!-- Countdown pill -->
-					<div id="done-countdown-pill"
-						class="flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-white/50">
-						<span id="done-countdown-secs" class="tabular-nums font-bold text-white/80">60</span>
-						<span>s to idle</span>
+					<!-- QR code top-right — always visible for scanning -->
+					<div class="flex flex-col items-center gap-1">
+						${qrSrc
+							? `<img src="${qrSrc}" alt="QR code for digital copy"
+									class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />`
+							: `<div class="w-20 sm:w-24 aspect-square rounded-xl border border-white/10 bg-white/5"></div>`}
+						<p class="text-[10px] uppercase tracking-[0.18em] text-white/40">Scan for digital copy</p>
 					</div>
 				</header>
 
-				<section class="flex-1 min-h-0 flex flex-col sm:flex-row items-stretch gap-4 sm:gap-6 px-4 sm:px-8 pt-2 pb-4 sm:pb-6">
+				<section class="flex-1 min-h-0 flex flex-col items-center px-4 sm:px-8 pt-2 pb-4 sm:pb-6 gap-3 sm:gap-4">
 
-					<!-- Left / top: postcard preview -->
-					<div class="flex-1 min-h-0 flex flex-col items-center justify-center gap-3">
-						<h1 class="text-[clamp(1.5rem,4vw,2.25rem)] font-bold leading-tight text-center">
-							Your postcard is ready! 🎉
-						</h1>
+					<h1 class="text-[clamp(1.5rem,4vw,2.25rem)] font-bold leading-tight text-center">
+						Your postcard is ready! 🎉
+					</h1>
 
-						<figure class="w-full max-w-2xl">
-							<img id="done-postcard" alt="your postcard"
-								class="w-full rounded-2xl border border-white/10 bg-black/40 shadow-[0_0_60px_rgba(246,130,31,0.25)]" />
-							<figcaption id="done-meta" class="mt-2 text-center text-xs text-white/40"></figcaption>
-						</figure>
+					<!-- Postcard image -->
+					<figure class="w-full max-w-2xl flex-1 min-h-0 flex flex-col justify-center">
+						<img id="done-postcard" alt="your postcard"
+							class="w-full max-h-full object-contain rounded-2xl border border-white/10 bg-black/40 shadow-[0_0_60px_rgba(246,130,31,0.25)]" />
+						<figcaption id="done-meta" class="mt-1.5 text-center text-xs text-white/40"></figcaption>
+					</figure>
 
-						<!-- Pick-up banner -->
-						<div class="flex items-center gap-3 rounded-2xl border border-cf-orange/30 bg-cf-orange/10 px-5 py-3 text-sm text-cf-orange font-medium max-w-lg w-full justify-center">
-							<span aria-hidden="true">🖨️</span>
-							Pick up your print at the counter
-						</div>
+					<!-- Pick-up banner -->
+					<div class="flex items-center gap-3 rounded-2xl border border-cf-orange/30 bg-cf-orange/10 px-5 py-3 text-sm text-cf-orange font-medium max-w-lg w-full justify-center">
+						<span aria-hidden="true">🖨️</span>
+						Pick up your print at the counter
 					</div>
 
-					<!-- Right / bottom: QR + actions -->
-					<div class="shrink-0 flex flex-col items-center justify-center gap-4 sm:gap-6 sm:w-52">
-						${qrSrc
-							? `<div class="flex flex-col items-center gap-2">
-								<img src="${qrSrc}" alt="QR code for digital copy"
-									class="w-36 sm:w-48 rounded-2xl border border-white/10 bg-white p-2" />
-								<p class="text-center text-xs text-white/60 max-w-[12rem]">
-									Scan for a digital copy
-								</p>
-							</div>`
-							: `<div class="w-36 sm:w-48 aspect-square rounded-2xl border border-white/10 bg-white/5 flex items-center justify-center text-white/30 text-xs">
-								QR unavailable
-							</div>`}
+					<!--
+						Countdown block — sits below the postcard, clearly visible.
+						Big number + explanatory copy + restart button in a row.
+					-->
+					<div class="flex flex-col sm:flex-row items-center gap-3 sm:gap-6 max-w-lg w-full">
+						<div class="flex flex-col items-center sm:items-start">
+							<div class="flex items-baseline gap-1.5">
+								<span id="done-countdown-secs" class="text-5xl sm:text-6xl font-black tabular-nums text-white leading-none">60</span>
+								<span class="text-base text-white/50 font-medium">s</span>
+							</div>
+							<p class="text-xs text-white/50 mt-1 text-center sm:text-left">
+								until idle &middot; tap anywhere to reset
+							</p>
+						</div>
 
 						<button id="done-restart"
-							class="w-full inline-flex items-center justify-center rounded-full bg-cf-orange px-6 py-3 text-base font-bold text-black shadow-[0_0_30px_rgba(246,130,31,0.4)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
+							class="sm:ml-auto inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black shadow-[0_0_30px_rgba(246,130,31,0.4)] hover:bg-cf-orange-dark active:scale-[0.98] transition whitespace-nowrap">
 							Start over
 						</button>
-
-						<p class="text-center text-[11px] uppercase tracking-[0.2em] text-white/30">
-							Tap anywhere to reset the timer
-						</p>
 					</div>
 				</section>
 			</main>
 			<script>
 			(function () {
 				const postcardEl = document.getElementById("done-postcard");
-				const metaEl    = document.getElementById("done-meta");
-				const secsEl    = document.getElementById("done-countdown-secs");
+				const metaEl     = document.getElementById("done-meta");
+				const secsEl     = document.getElementById("done-countdown-secs");
 				const restartBtn = document.getElementById("done-restart");
-				const root      = document.getElementById("done-root");
-				const sessionId = ${JSON.stringify(sessionId)};
-				const IDLE_SECS = 60;
+				const root       = document.getElementById("done-root");
+				// sessionId is injected server-side from ?session= — always a
+				// confirmed UUID (or null). Prefer this over state.sessionId from
+				// the WS frame, which can be "(unset)" if the DO seeded before
+				// the workflow's first markStep call arrived.
+				const sessionId  = ${JSON.stringify(sessionId)};
+				const IDLE_SECS  = 60;
 
 				// ---- Resolve artifacts from sessionStorage or fallback ----
 				let payload = null;
@@ -1300,14 +1297,18 @@ app.get("/kiosk/done", (c) => {
 					console.warn("bad kiosk:done payload:", err);
 				}
 
+				// Normalise sessionId: prefer URL param over stashed state.sessionId
+				// since stashed value can be "(unset)" from an early DO seed.
+				const resolvedSid = sessionId
+					|| (payload && /^[a-f0-9-]{36}$/.test(payload.sessionId) ? payload.sessionId : null);
+
 				if (payload && payload.postcardKey) {
 					postcardEl.src = "/api/run-img?key=" + encodeURIComponent(payload.postcardKey);
 					const scenePart = payload.sceneName || payload.sceneId || "";
-					metaEl.textContent = scenePart ? scenePart + " · " + (payload.sessionId || "").slice(0, 8) + "…" : "";
-				} else if (sessionId) {
-					// Fallback: user reloaded or sessionStorage was cleared.
-					postcardEl.src = "/api/run-img?key=" + encodeURIComponent("runs/" + sessionId + "/postcard.jpg");
-					metaEl.textContent = "session " + sessionId.slice(0, 8) + "…";
+					metaEl.textContent = scenePart ? scenePart + " · " + (resolvedSid || "").slice(0, 8) + "…" : "";
+				} else if (resolvedSid) {
+					postcardEl.src = "/api/run-img?key=" + encodeURIComponent("runs/" + resolvedSid + "/postcard.jpg");
+					metaEl.textContent = "session " + resolvedSid.slice(0, 8) + "…";
 				} else {
 					postcardEl.classList.add("hidden");
 					metaEl.textContent = "No postcard found — please start over.";
@@ -1327,7 +1328,6 @@ app.get("/kiosk/done", (c) => {
 					window.location.href = "/kiosk";
 				}
 
-				// Any interaction anywhere on the screen resets the timer.
 				root.addEventListener("pointerdown", resetCountdown, { passive: true });
 
 				const tick = setInterval(function () {
