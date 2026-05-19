@@ -136,7 +136,7 @@ Hibernation API so it can be evicted between events while sockets stay open.
 | Metadata DB | D1 | `env.DB` |
 | Config | KV (scene prompts) | `env.CONFIG` |
 | Static assets | Workers static assets | `env.ASSETS` |
-| Email | Cloudflare Email Workers (not yet wired) | tbd |
+| Email | Cloudflare Email Service (`send_email` binding, currently stubbed — see gotcha #26) | `env.EMAIL` |
 | Print | D1 `print_jobs` table + local Node agent on Mac mini (polls Worker endpoints) | `env.DB` (shared) |
 
 Resource IDs:
@@ -158,7 +158,8 @@ nyc-caricature-booth/
 │   │   ├── moderation.ts     # Llama 3.2 Vision moderation helper (shared)
 │   │   ├── flux.ts           # FLUX.2 klein 4B image-gen helper (shared)
 │   │   ├── scenes.ts         # Scene type + loadScenes / loadSceneById (KV)
-│   │   └── postcard.ts       # 1800×1200 postcard composer + QR PNG encoder
+│   │   ├── postcard.ts       # 1800×1200 postcard composer + QR PNG encoder
+│   │   └── email.ts          # Postcard email helper (stubbed — see gotcha #26)
 │   ├── session/
 │   │   └── session.ts        # SessionDO (one DO per session, hibernating WS)
 │   ├── workflows/
@@ -250,7 +251,8 @@ npm install && npm start
 
 ### Public landing
 - `GET /` — branded landing page with links to every test page
-- `GET /p/:id` — digital pickup landing (shows postcard for UUID sessions)
+- `GET /p/:id` — digital pickup landing (shows postcard for UUID sessions, email opt-in form, download, share)
+- `POST /api/p/:id/email` — body `{ email }`, stores email opt-in in D1 + triggers postcard email (stubbed)
 - `GET /api/health` — returns `{ status, step }`
 
 ### AI / Workflow tests
@@ -322,6 +324,7 @@ All test endpoints stay in place during development — they'll be cleaned up be
 23. **The workflow's `store` step writes ONLY the session upsert** — no print_jobs INSERT anymore (changed during Phase 9.1 review). Originally batched both in a single `DB.batch()` call; now printing is user-initiated so the workflow only persists the session row. Idempotent via `ON CONFLICT` on retries.
 24. **Print agent endpoints are unauthenticated.** `/api/print-agent/jobs` and `/api/print-agent/jobs/:id/ack` have no auth gate. This is acceptable for an event activation on a private network, but should be locked down before any public deployment (Phase 10 auth gate will cover this).
 25. **Printing is opt-in (`POST /api/kiosk/print`).** Attendees tap "Print my postcard" on `/kiosk/done`; only then does a `print_jobs` row get inserted. The endpoint is idempotent — existing pending/printing/printed jobs for the same session_id return `alreadyQueued: true` without re-inserting. Only `failed` jobs can be re-queued. Anyone who only wants the digital copy (QR + `/p/:id`) never produces a print_jobs row at all, which keeps the audit log honest about what was actually printed.
+26. **Email sending is stubbed.** The `send_email` binding (`env.EMAIL`) is wired and the `sendPostcardEmail` helper in `src/lib/email.ts` composes a full HTML + text email, but it currently logs to console instead of calling `env.EMAIL.send()`. To enable real sending: (a) onboard a domain to Cloudflare Email Service + add SPF/DKIM DNS records, (b) update `FROM_ADDRESS` in `src/lib/email.ts`, (c) uncomment the real send block and remove the stub. The email is fired via `waitUntil` on opt-in — failures don't block the API response.
 
 ---
 
