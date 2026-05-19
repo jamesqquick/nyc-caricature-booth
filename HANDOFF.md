@@ -20,24 +20,42 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Step 4.2 complete
+## Current status — Phase 5 complete (Step 5.4)
 
 Most recent commits:
 ```
+709f1fd feat: workflow pushes live state to SessionDO end-to-end (step 5.4)
+b27930e feat: WebSocket fan-out on SessionDO via hibernation API (step 5.3)
+dc4e50d feat: validated state machine + self-delete alarm on SessionDO (step 5.2)
+eee0b9d feat: bare SessionDO with getState + setStatus (step 5.1)
+ef3a517 feat: full pipeline — composite postcard + store session in D1 (step 4.4)
+6eb7076 feat: add generate step with retries to caricature workflow (step 4.3)
 c4160ed fix: stop elapsed timer when workflow reaches terminal status
 9eb9f2b feat: add moderate step to caricature workflow (step 4.2)
 45e8ece feat: add bare Cloudflare Workflow skeleton (step 4.1)
-64086b9 feat: add QR code to postcards + /p/:id digital pickup landing (step 3.3)
-f9ec89e feat: postcard format pipeline — 1800x1200 @ 300 DPI with watermark (step 3.2)
-8a99995 fix: watermark canvas now auto-sizes to content + uses textbbox for accurate glyph placement
-c480a9d feat: watermark overlay via Cloudflare Images binding (step 3.1)
-9588d77 feat: add content moderation via Llama 3.2 Vision with license auto-accept (step 2.4)
-a734c81 feat: scene-grid prompt spike — generate all 6 scenes in parallel + review page (step 2.3)
-f197a48 feat: image-to-image endpoint with selfie + scene picker form (step 2.2)
-de7f8fc feat: add Workers AI binding + FLUX.2 klein 4B test-ai endpoint (step 2.1)
 ```
 
-**Next up:** Step 4.3 — Add generate step with retries to the workflow.
+**Next up:** Step 6.1 — Idle screen for the kiosk app (iPad).
+
+### Architectural pivot during Phase 5
+
+The original plan called for one "Booth DO" per physical kiosk to coordinate
+state between iPad and big screen. After discussion we **dropped that idea**:
+
+- **iPad (and any user phone)** = the personal session view — connects to a
+  per-session DO for live updates while the workflow runs.
+- **Big screen** = a separate, static-ish gallery page (recent caricatures,
+  QR code, project info). **No real-time per-session feed.** It just refreshes
+  on a slow interval. This will be built later in (a slimmed-down) Phase 7.
+- **Print queue** = will use a Cloudflare Queue + a poll-based agent in
+  Phase 8. No booth-level singleton needed.
+
+**Result:** `SessionDO` is one DO per session, addressed by
+`idFromName(sessionId)`. Self-deletes 5 minutes after reaching `done` or
+`errored` via the alarm API. Stores the live status (queued → moderating →
+generating → compositing → done; any non-terminal → errored), per-step
+payloads, and accumulated timings. Holds WebSocket connections via the
+Hibernation API so it can be evicted between events while sockets stay open.
 
 ---
 
@@ -48,6 +66,7 @@ de7f8fc feat: add Workers AI binding + FLUX.2 klein 4B test-ai endpoint (step 2.
 | Frontend | Hono-rendered HTML + Tailwind v4 (built via standalone CLI) | n/a |
 | API | Workers + Hono | n/a |
 | Workflow orchestration | Cloudflare Workflows | `env.CARICATURE_WORKFLOW` |
+| Live session state | Durable Object — `SessionDO` (one per session, hibernating WS) | `env.SESSION` |
 | AI generation | Workers AI — `@cf/black-forest-labs/flux-2-klein-4b` (image-to-image, sub-2s) | `env.AI` |
 | Content moderation | Workers AI — `@cf/meta/llama-3.2-11b-vision-instruct` | `env.AI` |
 | Image composition | Cloudflare Images binding (watermark, resize, QR draw) | `env.IMAGES` |
@@ -56,7 +75,7 @@ de7f8fc feat: add Workers AI binding + FLUX.2 klein 4B test-ai endpoint (step 2.
 | Config | KV (scene prompts) | `env.CONFIG` |
 | Static assets | Workers static assets | `env.ASSETS` |
 | Email | Cloudflare Email Workers (not yet wired) | tbd |
-| Print | Local Node agent on Mac mini polling a DO over WS | not built yet |
+| Print | Cloudflare Queue + local Node agent on Mac mini (poll-based, not booth-DO based) | not built yet |
 
 Resource IDs:
 - D1: `nyc-booth-db` (`60a8fb4e-c023-4554-af74-4e2e0eb22565`)
@@ -73,7 +92,12 @@ nyc-caricature-booth/
 ├── src/
 │   ├── index.ts              # Hono app, all test endpoints, page templates
 │   ├── lib/
-│   │   └── moderation.ts     # Llama 3.2 Vision moderation helper (shared)
+│   │   ├── moderation.ts     # Llama 3.2 Vision moderation helper (shared)
+│   │   ├── flux.ts           # FLUX.2 klein 4B image-gen helper (shared)
+│   │   ├── scenes.ts         # Scene type + loadScenes / loadSceneById (KV)
+│   │   └── postcard.ts       # 1800×1200 postcard composer + QR PNG encoder
+│   ├── session/
+│   │   └── session.ts        # SessionDO (one DO per session, hibernating WS)
 │   ├── workflows/
 │   │   └── caricature.ts     # CaricatureWorkflow (WorkflowEntrypoint)
 │   └── styles/
@@ -87,8 +111,9 @@ nyc-caricature-booth/
 ├── seed/
 │   └── scenes.json           # 6 NYC scene definitions (seeded into KV)
 ├── migrations/
-│   └── 0001_initial.sql      # sessions table
-├── wrangler.jsonc            # all bindings + workflow config
+│   ├── 0001_initial.sql      # sessions table
+│   └── 0002_workflow_columns.sql  # adds scene_id, caricature_key, postcard_key, …
+├── wrangler.jsonc            # all bindings + workflow + DO config
 ├── package.json              # scripts: dev / build:css / deploy
 ├── .npmrc                    # overrides @cloudflare scope back to npmjs.org
 └── HANDOFF.md                # this file
@@ -142,13 +167,23 @@ npx wrangler kv key put --binding=CONFIG --remote scenes --path=seed/scenes.json
 - `GET /test-scene-grid` + `POST /api/test-scene-grid` — all 6 scenes in parallel
 - `GET /test-scene-grid/:runId` — side-by-side review for a run
 - `GET /api/scene-grid-img?key=...` — R2 image proxy (constrained to `prompt-spike/` prefix)
+- `GET /api/run-img?key=...` — R2 image proxy (constrained to `runs/` prefix)
 - `GET /test-moderate` + `POST /api/test-moderate` — image moderation
 - `GET /test-watermark` + `POST /api/test-watermark` — watermark overlay only
 - `GET /test-postcard` + `POST /api/test-postcard` — full 1800×1200 postcard + optional QR
 - `GET /api/test-workflow` — trigger bare workflow (just `hello` step)
 - `GET /api/test-workflow/:id` — workflow instance status
-- `GET /test-workflow-moderate` + `POST /api/test-workflow-moderate` — upload selfie → workflow with moderate step
-- `GET /test-workflow-moderate/:id` — live-polling status page
+- `GET /test-workflow-moderate` + `POST /api/test-workflow-moderate` — upload selfie + scene → full pipeline (redirects with `?session=<id>`)
+- `GET /test-workflow-moderate/:id?session=<sid>` — workflow status page; if `session` is present also subscribes to the SessionDO over WS
+
+### Session DO (per-session live state)
+- `POST /api/test-session` — create a new session DO with a random UUID, seed to `queued`
+- `GET /api/test-session/:id` — fetch current state
+- `POST /api/test-session/:id/status` — mark step (validated state machine). Body: JSON, form-urlencoded, multipart, or `?status=` query
+- `DELETE /api/test-session/:id` — force-delete DO storage
+- `GET /api/session/:id/ws` — WebSocket upgrade → proxied to the DO's hibernating socket
+- `GET /test-session` — landing/create page
+- `GET /test-session/:id` — manual driver page with live WebSocket panel
 
 ### R2 sanity endpoints
 - `GET /api/test-upload` — uploads a tiny PNG
@@ -174,6 +209,10 @@ All test endpoints stay in place during development — they'll be cleaned up be
 7. **File input + loading state pitfall:** Setting `<input type="file">.disabled = true` excludes it from form submission — server sees no file. Use `pointer-events: none` on the form instead. Lesson learned the hard way in step 2.2.
 8. **Watermark canvas auto-sizes to content.** Don't hardcode dimensions — the Cloudflare logo PNG is 2.2:1 aspect, so the watermark ended up wider than expected. `scripts/build-watermark.py` measures glyph + logo widths and pads.
 9. **`/api/test-workflow` returns different output shape now** after step 4.2 — it's `{ hello: { ... } }` (wrapped) instead of the bare `{ greeting, sessionId, at }`. That's because the new workflow always wraps the hello result in an object so additional steps can be added.
+10. **Two UUIDs per run** — the workflow's `instanceId` and the `sessionId` (used as both R2 prefix and SessionDO id) are different UUIDs. The status page URL uses `instanceId` as the path param and `sessionId` as a query param (`?session=`) so it can subscribe to the right SessionDO.
+11. **`markSession` in the workflow is best-effort** — failures inside `markSession`/`deleteSession` are caught and logged. The workflow is the source of truth; the SessionDO is just a live UX mirror. Never wrap markSession in a `step.do` (that would replay state transitions on retry).
+12. **SessionDO is SQLite-backed but uses KV-style storage today** — `new_sqlite_classes: ["SessionDO"]` in `wrangler.jsonc`. The whole `SessionState` blob lives under one key (`state`) so reads/writes are atomic. SQLite mode preserves the option to add SQL tables later without a class-replacement migration.
+13. **SessionDO self-deletes via alarm** — `markStep('done')` and `markStep('errored')` schedule a 5-minute alarm that calls `deleteAll()`. The workflow does NOT call `delete()` explicitly so late-connecting clients still see the final state.
 
 ---
 
@@ -200,38 +239,36 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 3.2 Postcard format (1800×1200 @ 300 DPI)
 - 3.3 QR code on postcards + `/p/:id` placeholder
 
-### Phase 4 — Workflow Pipeline 🚧
+### Phase 4 — Workflow Pipeline ✅
 - 4.1 ✅ Bare workflow skeleton (`hello` step)
 - 4.2 ✅ Add moderate step (selfie via R2 key)
-- 4.3 ⏳ **NEXT** — Add generate step with retries
-- 4.4 Add composite + store steps (full pipeline)
+- 4.3 ✅ Add generate step with retries
+- 4.4 ✅ Add composite + store steps (full pipeline)
 
-### Phase 5 — Booth Durable Object
-- 5.1 Bare DO with state
-- 5.2 State transitions
-- 5.3 WebSocket endpoint
-- 5.4 Connect Workflow to DO
+### Phase 5 — Session Durable Object ✅
+- 5.1 ✅ Bare SessionDO with getState + setStatus
+- 5.2 ✅ Validated state machine + self-delete alarm
+- 5.3 ✅ WebSocket endpoint (hibernation API)
+- 5.4 ✅ Workflow pushes live state to SessionDO end-to-end
 
-### Phase 6 — Kiosk App (iPad)
-- 6.1 Idle screen
+### Phase 6 — Kiosk App (iPad) 🚧 NEXT
+- 6.1 ⏳ Idle screen
 - 6.2 Camera capture screen
 - 6.3 Scene picker screen
 - 6.4 Submit to backend
-- 6.5 Status screen with WebSocket
+- 6.5 Status screen with WebSocket (subscribes to SessionDO)
 - 6.6 Done screen
 
-### Phase 7 — Big Screen App
-- 7.1 Idle slideshow
-- 7.2 Connect to Booth DO via WebSocket
-- 7.3 Active mode — generating
-- 7.4 Active mode — reveal
-- 7.5 Return to idle
+### Phase 7 — Big Screen App (slimmed down — see pivot note above)
+- 7.1 Static gallery layout (recent caricatures + QR + project info)
+- 7.2 Periodic refresh from D1 for new finished postcards
+- 7.3 Idle animation / branding pass
 
 ### Phase 8 — Print Queue + Agent
-- 8.1 Print Queue DO
-- 8.2 Workflow enqueues print job
-- 8.3 Print agent skeleton (Node script)
-- 8.4 Agent downloads + writes PDF
+- 8.1 Cloudflare Queue binding (`PRINT_QUEUE`)
+- 8.2 Workflow enqueues a print job after store
+- 8.3 Print agent skeleton (Node script polling the queue)
+- 8.4 Agent downloads postcard + writes PDF
 - 8.5 Mock printer driver
 - 8.6 Real printer integration (printer model TBD)
 
