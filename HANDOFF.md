@@ -20,21 +20,19 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 10 complete ✅
+## Current status — Phase 11 complete ✅
 
 Most recent commits:
 ```
-a165a5b  feat(admin): force-reprint endpoint that bypasses idempotency
-20ec773  feat(admin): always show Retry print on completed rows
-38d4583  feat(admin): real toast notifications via Notyf CDN
-3b0a5b2  fix: unify admin timestamp formatting via client-side <time data-ts>
-bdda212  feat: admin manual controls — retry print, resend email, re-seed (step 10.4)
-9036f13  feat: admin stats panel + /api/admin/stats (step 10.3)
-62951d9  feat: admin dashboard live sessions table + JSON feed (step 10.2)
-171b100  feat: admin auth gate with signed cookie middleware (step 10.1)
+0dffa37  feat: Analytics Engine — event tracking + /admin/metrics dashboard (step 11.4)
+3c42e64  fix(admin): escape newlines in delete confirm dialog
+bc081b4  feat: R2 lifecycle rules — 30-day expiry on kiosk/ and runs/ prefixes (step 11.3)
+5bb54b1  feat(admin): delete session — removes D1 rows, R2 objects, DO storage (step 11.2)
+2072ea6  feat: privacy notice — /privacy page, kiosk footers, /p/:id link (step 11.2)
+d163475  feat: error states hardening (step 11.1)
 ```
 
-**Next up:** Phase 11 — Hardening & Polish.
+**Next up:** Phase 12 — Load Test + Dry Run.
 
 ### Phase 6 — complete kiosk flow
 
@@ -155,6 +153,55 @@ only secret it relies on is the `ADMIN_PASSWORD` Worker secret.
   placeholders; one client-side `fmtTs()` formats them in the viewer's
   locale on load + after every poll, so there's never a format flip.
 
+### Phase 11 — Hardening & Polish ✅
+
+Error handling, privacy, data retention, and event analytics.
+
+**Error states (11.1):**
+- Camera permission denial on `/kiosk/capture` shows a brand-consistent overlay
+  with a "Retry permissions" button that re-calls `getUserMedia()`.
+- Kiosk status errored screen (`/kiosk/status`) no longer surfaces raw error
+  text — moderation rejections get a specific user-facing message, everything
+  else gets a generic fallback. Raw errors logged to browser console for staff.
+- `/kiosk/done` handles broken postcard `<img>` from R2: retries twice with
+  1.5s delay, then shows a "Your postcard is being prepared" placeholder.
+- `/p/:id` in-progress state caps auto-refresh at 12 retries (~60s) via
+  `?_retry=N` query param, then shows a manual "Refresh" button.
+- Print failure: button shows "Print failed — please ask staff" and disables.
+  Staff retries via admin dashboard's Retry print button.
+- Workflow moderation rejection: marks session `errored` in both DO and D1
+  with a specific `error_msg`. `/p/:id` and kiosk status detect the
+  "moderation rejected" pattern and show tailored copy.
+
+**Privacy (11.2):**
+- Footer on `/kiosk` and `/kiosk/capture`: "We don't store your photo after
+  the event · [Privacy](/privacy)".
+- `/privacy` page with placeholder ToS copy covering what we collect, how
+  we use it, data retention, processing location, and user rights. Has
+  `TODO(legal)` comments — needs legal review before the event.
+- Privacy link in `/p/:id` footer.
+- `DELETE /api/admin/session/:id` — staff can purge all data for a session
+  (D1 rows, R2 objects, DO storage). Red "Delete" button on every row in
+  the admin dashboard with confirm dialog.
+
+**R2 lifecycle (11.3):**
+- Two lifecycle rules applied via `wrangler r2 bucket lifecycle add`:
+  - `expire-kiosk-selfies-30d` — deletes `kiosk/*` after 30 days
+  - `expire-run-artifacts-30d` — deletes `runs/*` after 30 days
+- `public/` and root-level assets (watermark, logo) are NOT affected.
+- Verify with: `npx wrangler r2 bucket lifecycle list nyc-booth-images`
+
+**Analytics Engine (11.4):**
+- `env.ANALYTICS` binding to dataset `nyc_booth_events`.
+- Events emitted: `session.created`, `workflow.moderating`, `workflow.generating`,
+  `workflow.compositing`, `workflow.done`, `workflow.errored`, `print.requested`,
+  `print.completed`, `print.failed`, `email.captured`, `session.deleted`.
+- Schema: `blob1`=event, `blob2`=sessionId, `blob3`=detail, `double1`=count(1),
+  `double2`=elapsedMs, `index1`=event (sampling key).
+- `/admin/metrics` page queries AE SQL API — requires `AE_API_TOKEN` secret
+  with Account Analytics Read permission. Shows event count cards + hourly timeline.
+- If the secret isn't set, the page shows a setup instruction instead of crashing.
+
 ### Architectural pivot during Phase 5
 
 The original plan called for one "Booth DO" per physical kiosk to coordinate
@@ -194,6 +241,7 @@ Hibernation API so it can be evicted between events while sockets stay open.
 | Config | KV (scene prompts) | `env.CONFIG` |
 | Static assets | Workers static assets | `env.ASSETS` |
 | Email | Cloudflare Email Service (`send_email` binding, currently stubbed — see gotcha #26) | `env.EMAIL` |
+| Event analytics | Workers Analytics Engine (`nyc_booth_events` dataset) | `env.ANALYTICS` |
 | Print | D1 `print_jobs` table + local Node agent on Mac mini (polls Worker endpoints) | `env.DB` (shared) |
 
 Resource IDs:
@@ -219,7 +267,8 @@ nyc-caricature-booth/
 │   │   ├── postcard.ts       # 1800×1200 postcard composer + QR PNG encoder
 │   │   ├── email.ts          # Postcard email helper (stubbed — see gotcha #26)
 │   │   ├── admin-auth.ts     # HMAC cookie signing + Hono auth middleware (10.1)
-│   │   └── admin-data.ts     # loadAdminSessions + loadAdminStats (10.2/10.3)
+│   │   ├── admin-data.ts     # loadAdminSessions + loadAdminStats (10.2/10.3)
+│   │   └── analytics.ts      # AE trackEvent + queryAE helpers (11.4)
 │   ├── session/
 │   │   └── session.ts        # SessionDO (one DO per session, hibernating WS)
 │   ├── workflows/
@@ -291,8 +340,14 @@ npm install && npm start
 npx wrangler secret put ADMIN_PASSWORD
 # (current value: see 1Password or local notes — not committed)
 
-# Verify the secret is set
+# Set the Analytics Engine query token (Account Analytics Read permission)
+npx wrangler secret put AE_API_TOKEN
+
+# Verify secrets are set
 npx wrangler secret list
+
+# List R2 lifecycle rules
+npx wrangler r2 bucket lifecycle list nyc-booth-images
 ```
 
 ---
@@ -342,25 +397,29 @@ Lives at **`/admin`**, password-gated. The cookie lasts 24h.
 - `GET /display` — gallery of last 8 completed postcards (30s polling, shimmer, QR)
 - `GET /api/display/feed` — JSON feed of last 8 completed sessions for client polling
 
-### Admin dashboard (Phase 10 — live)
+### Admin dashboard (Phase 10 + 11 — live)
 - `GET /admin/login` — password form (uses `page()` shell)
 - `POST /admin/login` — verify password, set signed cookie, redirect to `next`
 - `GET /admin/logout` — clear cookie, redirect to `/admin/login`
 - `GET /admin` — dashboard: stat cards, sessions-by-scene pills, last 30
   sessions table with per-row actions
+- `GET /admin/metrics` — Analytics Engine event counts + hourly timeline (last 24h)
 - `GET /api/admin/sessions` — last 30 sessions joined to most-recent print
   job; polled every 10s from `/admin`
 - `GET /api/admin/stats` — aggregate counts + AVG pipeline + scene breakdown
+- `GET /api/admin/metrics` — AE SQL API queries for event counts + timeline (JSON)
 - `POST /api/admin/reprint/:id` — force a fresh print job (no idempotency,
   use this from staff tools, NOT `/api/kiosk/print`)
 - `POST /api/admin/resend-email/:id` — re-fire `sendPostcardEmail()` via
   `waitUntil` for a session with an email on file
 - `POST /api/admin/reseed-scenes` — push bundled `seed/scenes.json` into KV
+- `DELETE /api/admin/session/:id` — purge all data for a session (D1, R2, DO)
 
 ### Public landing
 - `GET /` — branded landing page with links to every test page
 - `GET /p/:id` — digital pickup landing (shows postcard for UUID sessions, email opt-in form, download, share)
 - `POST /api/p/:id/email` — body `{ email }`, stores email opt-in in D1 + triggers postcard email (stubbed)
+- `GET /privacy` — privacy & data handling page (placeholder copy — needs legal review, see TODO comments)
 - `GET /api/health` — returns `{ status, step }`
 
 ### AI / Workflow tests
@@ -437,6 +496,11 @@ All test endpoints stay in place during development — they'll be cleaned up be
 28. **Admin cookie is `Secure`, so it won't be set on plain HTTP.** Local `wrangler dev` runs on `http://localhost:8787` by default; logging in there will appear to "work" (303 response) but the browser silently drops the `Secure` cookie and you'll be bounced back to `/admin/login`. Two workarounds: (a) run wrangler with HTTPS, or (b) temporarily flip the `Secure` flag in `src/lib/admin-auth.ts` for local dev. Production is fine — Workers always serves over HTTPS.
 29. **`seed/scenes.json` is imported into the Worker bundle**, not read at runtime. `src/index.ts` does `import scenesSeed from "../seed/scenes.json"` so the JSON is captured at build time and shipped inside the Worker. `POST /api/admin/reseed-scenes` writes that bundled copy into KV. Editing `seed/scenes.json` requires a `wrangler deploy` to take effect; running the admin "Re-seed scenes" button against an old deploy will write the old scenes. `tsconfig.json` has `resolveJsonModule: true` for the import to type-check.
 30. **Worker secrets aren't picked up by `wrangler types`.** `npx wrangler types` only generates bindings declared in `wrangler.jsonc`. Secrets set via `wrangler secret put` (like `ADMIN_PASSWORD`) need a manual TypeScript augmentation. `src/env.d.ts` declares `interface Env { ADMIN_PASSWORD: string }` and `tsconfig.json`'s `include` lists `src/**/*.d.ts` so it's picked up alongside the generated `worker-configuration.d.ts`. Re-running `wrangler types` won't wipe it because it lives in a separate file. Add future secrets the same way.
+31. **Escape sequences in inline `<script>` blocks.** All client JS lives inside TypeScript template literals (backticks). TypeScript processes `\n`, `\t` etc. as escape sequences in template literals, injecting real newlines into the rendered `<script>` block. A JS `"..."` string can't span multiple lines, so this produces a `SyntaxError` that silently breaks the entire IIFE. Use `"\\n"` (double-escaped) so the rendered output contains the literal `\n` that JS interprets at runtime. Caught and fixed in the admin delete confirm dialog.
+32. **R2 lifecycle rules are bucket-level, not in `wrangler.jsonc`.** Applied via `wrangler r2 bucket lifecycle add` CLI command. Two rules: `expire-kiosk-selfies-30d` (prefix `kiosk/`, 30 days) and `expire-run-artifacts-30d` (prefix `runs/`, 30 days). `public/` and root objects are not affected. Verify with `wrangler r2 bucket lifecycle list nyc-booth-images`.
+33. **Analytics Engine SQL API requires a separate API token.** The `AE_API_TOKEN` secret (set via `wrangler secret put AE_API_TOKEN`) needs the "Account Analytics Read" permission. Without it, `/admin/metrics` shows a setup message. The `env.ANALYTICS` binding for writing data points needs no token — writes are fire-and-forget from the Worker runtime.
+34. **`/privacy` copy is placeholder.** The text on `/privacy` has `TODO(legal)` comments. It covers reasonable defaults (what's collected, retention, rights) but has NOT been reviewed by Cloudflare Legal. James should send the copy to legal before the event.
+35. **Admin delete is destructive and irreversible.** `DELETE /api/admin/session/:id` removes D1 rows (sessions + print_jobs), R2 objects (selfie, caricature, postcard), and force-deletes the SessionDO. It cannot recall printed physical postcards. The confirm dialog is the only guard.
 
 ---
 
@@ -508,11 +572,11 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 10.3 ✅ Stats panel (six stat cards + scene breakdown + `/api/admin/stats`)
 - 10.4 ✅ Manual controls (force reprint, resend email, re-seed scenes, seed test print job)
 
-### Phase 11 — Hardening & Polish
-- 11.1 Error states
-- 11.2 Privacy notice on kiosk
-- 11.3 R2 lifecycle rule for 30-day retention
-- 11.4 Analytics Engine for metrics
+### Phase 11 — Hardening & Polish ✅
+- 11.1 ✅ Error states (camera retry, friendly errors, R2 fallback, poll cap, print failure UX, moderation path)
+- 11.2 ✅ Privacy notice on kiosk (/privacy page, footers, admin delete-session)
+- 11.3 ✅ R2 lifecycle rule for 30-day retention (kiosk/ and runs/ prefixes)
+- 11.4 ✅ Analytics Engine for metrics (event tracking + /admin/metrics dashboard)
 
 ### Phase 12 — Load Test + Dry Run
 - 12.1 Synthetic load test
@@ -527,7 +591,7 @@ All test endpoints stay in place during development — they'll be cleaned up be
 2. **Designer assets** — DevRel resources will be sourced; build with Cloudflare brand defaults in the meantime.
 3. **Scene prompts** — Locked in `seed/scenes.json`. May need refinement after step 2.3 visual review (user has not yet flagged issues).
 4. **Big screen reveal animation** — design pass during week 2.
-5. **Privacy copy / ToS micro-text** — needs legal review before event.
+5. **Privacy copy / ToS micro-text** — placeholder live at `/privacy` with `TODO(legal)` comments. Needs legal review before event.
 
 ---
 
