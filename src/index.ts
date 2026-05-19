@@ -593,7 +593,10 @@ app.get("/kiosk/scene", async (c) => {
 
 	const cards = scenes
 		.map(
-			(s, idx) => `<button type="button" data-scene-id="${s.id}" data-scene-name="${s.name.replace(/"/g, "&quot;")}"
+			(s, idx) => `<button type="button"
+				data-scene-id="${s.id}"
+				data-scene-name="${s.name.replace(/"/g, "&quot;")}"
+				data-scene-emoji="${s.emoji.replace(/"/g, "&quot;")}"
 				class="scene-card group relative flex flex-col items-start text-left rounded-3xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/30 active:scale-[0.98] transition p-4 sm:p-5 focus:outline-none focus-visible:ring-2 focus-visible:ring-cf-orange disabled:opacity-50 disabled:cursor-not-allowed"
 				style="animation-delay: ${idx * 40}ms;">
 				<div class="text-4xl sm:text-5xl leading-none mb-2 sm:mb-3" aria-hidden="true">${s.emoji}</div>
@@ -668,13 +671,17 @@ app.get("/kiosk/scene", async (c) => {
 					if (!card || card.disabled) return;
 					const sceneId = card.getAttribute("data-scene-id");
 					const sceneName = card.getAttribute("data-scene-name");
+					const sceneEmoji = card.getAttribute("data-scene-emoji") || "";
 					if (!sceneId) return;
 					lockGrid();
 					card.classList.add("ring-2", "ring-cf-orange");
 					statusEl.textContent = "Loading " + sceneName + "…";
+					// Stash the emoji too so /kiosk/review can render the scene
+					// card synchronously without a /api/scenes round-trip.
 					sessionStorage.setItem("kiosk:selfie", JSON.stringify(Object.assign({}, selfie, {
 						sceneId: sceneId,
 						sceneName: sceneName,
+						sceneEmoji: sceneEmoji,
 						sceneChosenAt: Date.now(),
 					})));
 					window.location.href = "/kiosk/review";
@@ -733,7 +740,7 @@ app.get("/kiosk/review", (c) => {
 						<div class="flex flex-col items-center gap-2">
 							<div class="text-xs uppercase tracking-[0.2em] text-white/40">Your scene</div>
 							<div class="aspect-[3/4] w-full max-w-[260px] rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5 flex flex-col items-center justify-center text-center">
-								<div id="rev-scene-emoji" class="text-6xl sm:text-7xl leading-none" aria-hidden="true">·</div>
+								<div id="rev-scene-emoji" class="text-6xl sm:text-7xl leading-none" aria-hidden="true">🗽</div>
 								<div id="rev-scene-name" class="mt-3 text-base sm:text-lg font-semibold leading-tight">Loading…</div>
 							</div>
 						</div>
@@ -775,18 +782,10 @@ app.get("/kiosk/review", (c) => {
 
 				selfieEl.src = "/api/run-img?key=" + encodeURIComponent(data.selfieKey);
 				nameEl.textContent = data.sceneName || data.sceneId;
-
-				// Fetch /api/scenes to get the emoji (we only stash sceneName client-
-				// side, not emoji, to keep sessionStorage small). Best-effort —
-				// failure just leaves the placeholder dot.
-				fetch("/api/scenes")
-					.then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("scenes fetch failed")); })
-					.then(function (scenes) {
-						if (!Array.isArray(scenes)) return;
-						const scene = scenes.find(function (s) { return s && s.id === data.sceneId; });
-						if (scene && scene.emoji) emojiEl.textContent = scene.emoji;
-					})
-					.catch(function (err) { console.warn("scenes lookup failed:", err); });
+				// sceneEmoji is stashed by the picker; render it synchronously so
+				// there's no flash of empty card. Falls back to a subtle marker
+				// for older sessionStorage entries (pre-emoji-stash).
+				if (data.sceneEmoji) emojiEl.textContent = data.sceneEmoji;
 
 				goBtn.disabled = false;
 
