@@ -158,7 +158,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "11.2" });
+	return c.json({ status: "ok", step: "11.3" });
 });
 
 // ---------------------------------------------------------------------------
