@@ -776,16 +776,14 @@ app.get("/admin", async (c) => {
 
 					var promise;
 					if (action === "retry-print") {
-						promise = callJson("/api/kiosk/print", {
+						// /api/admin/reprint always inserts a new print_jobs row,
+						// unlike /api/kiosk/print which is idempotent. Staff need the
+						// unconditional path so they can recover from physical jams /
+						// print bad copies / hand out duplicate postcards.
+						promise = callJson("/api/admin/reprint/" + encodeURIComponent(sessionId), {
 							method: "POST",
-							headers: { "content-type": "application/json" },
-							body: JSON.stringify({ sessionId: sessionId }),
-						}).then(function (j) {
-							if (j.alreadyQueued) {
-								toast("Print already queued for " + shortId + " (" + j.status + ")");
-							} else {
-								toast("Queued print for " + shortId);
-							}
+						}).then(function () {
+							toast("Queued reprint for " + shortId);
 							// Force a quick refresh so the new print_status pill shows up.
 							poll();
 						});
@@ -853,6 +851,64 @@ app.get("/api/admin/sessions", async (c) => {
 app.get("/api/admin/stats", async (c) => {
 	const stats = await loadAdminStats(c.env);
 	return c.json(stats);
+});
+
+/**
+ * Manual control: force-enqueue a new print job for a session, even if one
+ * already exists. Unlike POST /api/kiosk/print (which is idempotent so an
+ * attendee can't spam the queue from /kiosk/done), this endpoint always
+ * inserts a fresh print_jobs row. Use cases:
+ *   - Physical postcard jammed / printed badly — staff need another copy
+ *   - Attendee wants a second postcard
+ *   - The job is marked `printed` in D1 but the agent crashed before delivery
+ *
+ * POST /api/admin/reprint/:id
+ */
+app.post("/api/admin/reprint/:id", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) {
+		return c.json({ error: "invalid session id" }, 400);
+	}
+
+	const session = await c.env.DB.prepare(
+		"SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
+	)
+		.bind(id)
+		.first<{
+			id: string;
+			status: string | null;
+			postcard_key: string | null;
+			scene_name: string | null;
+		}>();
+
+	if (!session) {
+		return c.json({ error: "session not found" }, 404);
+	}
+	if (session.status !== "completed" || !session.postcard_key) {
+		return c.json({ error: "session is not completed" }, 409);
+	}
+
+	const origin = new URL(c.req.url).origin;
+	const postcardUrl = `${origin}/p/${id}`;
+	const sceneName = session.scene_name ?? "NYC scene";
+
+	const result = await c.env.DB.prepare(
+		`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
+		 VALUES (?, ?, ?, ?)
+		 RETURNING id`,
+	)
+		.bind(id, session.postcard_key, postcardUrl, sceneName)
+		.first<{ id: string }>();
+
+	if (!result) {
+		return c.json({ error: "failed to enqueue reprint" }, 500);
+	}
+
+	console.log(
+		`[admin-reprint] session=${id} jobId=${result.id} sceneName=${sceneName}`,
+	);
+
+	return c.json({ ok: true, jobId: result.id, status: "pending" });
 });
 
 /**
