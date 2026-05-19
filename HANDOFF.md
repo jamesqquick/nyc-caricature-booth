@@ -20,18 +20,18 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 8 in progress (steps 8.1–8.3 complete)
+## Current status — Phase 8 mostly complete (8.6 blocked on printer model)
 
 Most recent commits:
 ```
-<TBD>    refactor: pivot print queue from CF Queue to D1 + Worker endpoints (step 8.3 revised)
+9b5790f  feat: mock printer driver with Printer interface (step 8.5)
+82f19f7  feat: agent downloads postcard + writes print-ready PDF (step 8.4)
+0005ebe  refactor: pivot print system from CF Queue to D1 + Worker endpoints (step 8.3 revised)
 d39a580  feat: workflow enqueues print job after store step (step 8.2)
 e28943e  feat: add PRINT_QUEUE binding + HTTP pull consumer (step 8.1)
-6d74111  docs: update HANDOFF for Phase 7 completion
-0ab772f  feat: branding pass — shimmer, glow, QR, CF badge (step 7.3)
 ```
 
-**Next up:** Phase 8.4 — Agent downloads postcard + writes PDF.
+**Next up:** Phase 8.6 (blocked on printer model decision) or Phase 9 — Digital Copy.
 
 ### Phase 6 — complete kiosk flow
 
@@ -71,6 +71,25 @@ state — just a slow-refresh view of recent postcards.
 - Idle shimmer: CSS gradient sweep (10s cycle, subtle orange tint)
 - Empty state: "No postcards yet — be the first!" when D1 has no completed rows
 
+### Phase 8 — print queue + agent (8.1–8.5 complete, 8.6 blocked)
+
+The print system uses D1 as the job queue (pivoted from Cloudflare Queues —
+see gotcha #22). The workflow's `store` step batches both the session upsert
+and a `print_jobs` INSERT in a single `DB.batch()` call.
+
+- **Worker endpoints:** `GET /api/print-agent/jobs` (pending jobs) +
+  `POST /api/print-agent/jobs/:id/ack` (mark printed/failed)
+- **Print agent:** standalone Node/tsx script in `print-agent/`. Polls the
+  Worker, downloads the postcard JPEG via `/api/run-img`, wraps it in a
+  4×6" PDF (pdf-lib), sends to the `Printer` driver, acks the job.
+- **Printer interface:** `Printer` with `print(pdfBytes, jobId)`. Currently
+  wired to `MockPrinter` (simulated delay + writes to `spool/` dir).
+  Swap to a real driver when the printer model is decided.
+- **No auth on agent endpoints** — acceptable for event activation on a
+  private network. Phase 10 auth gate will cover this.
+- **Test endpoint:** `GET /api/test-print-job?session=<id>` seeds a print
+  job for any existing completed session (useful for dev/testing).
+
 ### Architectural pivot during Phase 5
 
 The original plan called for one "Booth DO" per physical kiosk to coordinate
@@ -81,8 +100,9 @@ state between iPad and big screen. After discussion we **dropped that idea**:
 - **Big screen** = a separate, static-ish gallery page (recent caricatures,
   QR code, project info). **No real-time per-session feed.** It just refreshes
   on a slow interval. This will be built later in (a slimmed-down) Phase 7.
-- **Print queue** = will use a Cloudflare Queue + a poll-based agent in
-  Phase 8. No booth-level singleton needed.
+- **Print queue** = uses D1 `print_jobs` table + a local Node agent that
+  polls Worker endpoints. Originally planned as a Cloudflare Queue but
+  pivoted to D1 (simpler, no API token, built-in audit log).
 
 **Result:** `SessionDO` is one DO per session, addressed by
 `idFromName(sessionId)`. Self-deletes 5 minutes after reaching `done` or
@@ -259,6 +279,7 @@ npm install && npm start
 ### Print agent (polled by Mac mini)
 - `GET /api/print-agent/jobs?limit=5` — returns pending print jobs from D1
 - `POST /api/print-agent/jobs/:id/ack` — mark a job `printed` or `failed`
+- `GET /api/test-print-job?session=<id>` — seed a print job for an existing completed session (omit `session` for most recent)
 
 All test endpoints stay in place during development — they'll be cleaned up before launch.
 
@@ -341,13 +362,13 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 7.2 ✅ Periodic refresh from D1 for new finished postcards
 - 7.3 ✅ Idle animation / branding pass
 
-### Phase 8 — Print Queue + Agent
+### Phase 8 — Print Queue + Agent (8.1–8.5 ✅, 8.6 blocked)
 - 8.1 ✅ ~~Cloudflare Queue binding~~ (created but pivoted to D1)
 - 8.2 ✅ Workflow writes `print_jobs` row in D1 (batched with session insert)
-- 8.3 ✅ Print agent skeleton (Node script polling Worker endpoints)
-- 8.4 Agent downloads postcard + writes PDF
-- 8.5 Mock printer driver
-- 8.6 Real printer integration (printer model TBD)
+- 8.3 ✅ Print agent skeleton (Node script polling Worker endpoints, no API token needed)
+- 8.4 ✅ Agent downloads postcard via `/api/run-img` + writes 4×6" print-ready PDF (pdf-lib)
+- 8.5 ✅ Mock printer driver (`Printer` interface + `MockPrinter` with spool dir)
+- 8.6 ⏳ Real printer integration (blocked on printer model decision)
 
 ### Phase 9 — Digital Copy
 - 9.1 Landing page route
