@@ -20,10 +20,11 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 8 mostly complete (8.6 blocked on printer model)
+## Current status — Phase 8 complete ✅
 
 Most recent commits:
 ```
+<TBD>    feat: DNP DS620A printer driver via CUPS/lp (step 8.6)
 9b5790f  feat: mock printer driver with Printer interface (step 8.5)
 82f19f7  feat: agent downloads postcard + writes print-ready PDF (step 8.4)
 0005ebe  refactor: pivot print system from CF Queue to D1 + Worker endpoints (step 8.3 revised)
@@ -31,7 +32,7 @@ d39a580  feat: workflow enqueues print job after store step (step 8.2)
 e28943e  feat: add PRINT_QUEUE binding + HTTP pull consumer (step 8.1)
 ```
 
-**Next up:** Phase 8.6 (blocked on printer model decision) or Phase 9 — Digital Copy.
+**Next up:** Phase 9 — Digital Copy.
 
 ### Phase 6 — complete kiosk flow
 
@@ -71,7 +72,7 @@ state — just a slow-refresh view of recent postcards.
 - Idle shimmer: CSS gradient sweep (10s cycle, subtle orange tint)
 - Empty state: "No postcards yet — be the first!" when D1 has no completed rows
 
-### Phase 8 — print queue + agent (8.1–8.5 complete, 8.6 blocked)
+### Phase 8 — print queue + agent ✅
 
 The print system uses D1 as the job queue (pivoted from Cloudflare Queues —
 see gotcha #22). The workflow's `store` step batches both the session upsert
@@ -82,9 +83,11 @@ and a `print_jobs` INSERT in a single `DB.batch()` call.
 - **Print agent:** standalone Node/tsx script in `print-agent/`. Polls the
   Worker, downloads the postcard JPEG via `/api/run-img`, wraps it in a
   4×6" PDF (pdf-lib), sends to the `Printer` driver, acks the job.
-- **Printer interface:** `Printer` with `print(pdfBytes, jobId)`. Currently
-  wired to `MockPrinter` (simulated delay + writes to `spool/` dir).
-  Swap to a real driver when the printer model is decided.
+- **Printer drivers:** `Printer` interface with `print(pdfBytes, jobId)`.
+  Two implementations:
+  - `MockPrinter` — simulated delay + writes to `spool/` dir (default)
+  - `DnpDs620Printer` — sends PDF to DNP DS620A via CUPS `lp` command
+  Select via env: `PRINTER_DRIVER=mock|dnp`, `PRINTER_NAME=<CUPS name>`
 - **No auth on agent endpoints** — acceptable for event activation on a
   private network. Phase 10 auth gate will cover this.
 - **Test endpoint:** `GET /api/test-print-job?session=<id>` seeds a print
@@ -362,13 +365,13 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 7.2 ✅ Periodic refresh from D1 for new finished postcards
 - 7.3 ✅ Idle animation / branding pass
 
-### Phase 8 — Print Queue + Agent (8.1–8.5 ✅, 8.6 blocked)
+### Phase 8 — Print Queue + Agent ✅
 - 8.1 ✅ ~~Cloudflare Queue binding~~ (created but pivoted to D1)
 - 8.2 ✅ Workflow writes `print_jobs` row in D1 (batched with session insert)
 - 8.3 ✅ Print agent skeleton (Node script polling Worker endpoints, no API token needed)
 - 8.4 ✅ Agent downloads postcard via `/api/run-img` + writes 4×6" print-ready PDF (pdf-lib)
 - 8.5 ✅ Mock printer driver (`Printer` interface + `MockPrinter` with spool dir)
-- 8.6 ⏳ Real printer integration (blocked on printer model decision)
+- 8.6 ✅ DNP DS620A driver (`DnpDs620Printer` via CUPS/lp, env-selectable)
 
 ### Phase 9 — Digital Copy
 - 9.1 Landing page route
@@ -397,7 +400,7 @@ All test endpoints stay in place during development — they'll be cleaned up be
 
 ## Pending product decisions
 
-1. **Printer model** — TBD. `Printer` interface in print agent will be left as a placeholder until decided. Recommendation: DNP DS620 (event-industry standard, ~8-12s/print, CUPS-compatible on macOS).
+1. **Printer model** — ✅ Decided: **DNP DS620A**. Driver implemented (`DnpDs620Printer`). Set `PRINTER_DRIVER=dnp` and `PRINTER_NAME=<CUPS name>` in `print-agent/.env`. Find the CUPS name with `lpstat -p -d` after installing the DNP macOS driver.
 2. **Designer assets** — DevRel resources will be sourced; build with Cloudflare brand defaults in the meantime.
 3. **Scene prompts** — Locked in `seed/scenes.json`. May need refinement after step 2.3 visual review (user has not yet flagged issues).
 4. **Big screen reveal animation** — design pass during week 2.

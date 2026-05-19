@@ -4,14 +4,15 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchJobs, ackJob } from "./queue.js";
 import { buildPrintPdf } from "./pdf.js";
-import { MockPrinter, type Printer } from "./printer.js";
+import { createPrinter } from "./printer.js";
 import type { AgentConfig, PrintJob } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIR = join(__dirname, "..", "output");
 
-// Swap this for a real printer driver when hardware is decided (step 8.6)
-const printer: Printer = new MockPrinter();
+// PRINTER_DRIVER: "mock" (default) or "dnp" / "dnp-ds620"
+// PRINTER_NAME: CUPS printer name (default: "DNP_DS620")
+const printer = createPrinter(process.env.PRINTER_DRIVER, process.env.PRINTER_NAME);
 
 // ---------------------------------------------------------------------------
 // Config from environment
