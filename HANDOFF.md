@@ -20,45 +20,46 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Step 6.2 complete
+## Current status — Phase 6 complete ✅
 
 Most recent commits:
 ```
+dadeb09 fix: remove QR from printed postcard composite step
+175c061 fix: QR unavailable + layout on /kiosk/done
+d76685b feat: kiosk done screen + QR endpoint (step 6.6 — Phase 6 complete)
+73ec8ef feat: kiosk live status screen (WS) + /kiosk/done placeholder (step 6.5)
+e83927a fix: stash sceneEmoji in sessionStorage so /kiosk/review renders scene card
+956ffe8 feat: kiosk → workflow trigger + review/status screens (step 6.4)
+e54ac74 feat: kiosk scene picker grid + /kiosk/review placeholder (step 6.3)
 a2038ec feat: kiosk camera capture + R2 upload + responsive layout (step 6.2)
 cdb3b7e feat: kiosk idle screen with kioskPage shell (step 6.1)
-22762a1 docs: update HANDOFF for Phase 5 completion + architectural pivot
-709f1fd feat: workflow pushes live state to SessionDO end-to-end (step 5.4)
-b27930e feat: WebSocket fan-out on SessionDO via hibernation API (step 5.3)
-dc4e50d feat: validated state machine + self-delete alarm on SessionDO (step 5.2)
-eee0b9d feat: bare SessionDO with getState + setStatus (step 5.1)
-ef3a517 feat: full pipeline — composite postcard + store session in D1 (step 4.4)
-6eb7076 feat: add generate step with retries to caricature workflow (step 4.3)
 ```
 
-**Next up:** Step 6.3 — Scene picker screen.
+**Next up:** Phase 7 — Big Screen App (static gallery, periodic D1 refresh,
+branding pass).
 
-### Phase 6 scope (recap)
+### Phase 6 — complete kiosk flow
 
-We agreed to break the iPad app into focused steps rather than one big
-end-to-end commit. Done so far:
+The full iPad flow is live end-to-end:
 
-- 6.1 ✅ Idle landing (`/kiosk`) with "Tap to start"
-- 6.2 ✅ Camera capture (`/kiosk/capture`) — getUserMedia preview, shutter
-  with use/retake, uploads JPEG to R2 at `kiosk/<sessionId>/selfie.jpg`,
-  stashes `{ sessionId, selfieKey, size, capturedAt }` in sessionStorage
-  under `kiosk:selfie`, navigates to `/kiosk/scene` (currently a
-  placeholder that just renders the handoff payload).
-- 6.3 ⏳ **NEXT** — Scene picker. Read `kiosk:selfie` from sessionStorage,
-  render the 6 scenes from `env.CONFIG` (KV key `scenes`) as a tappable
-  grid in portrait, on tap stash `{ ...selfie, sceneId, sceneName }` and
-  navigate to the next placeholder.
-- 6.4 — Kiosk-side workflow trigger (POST a `/api/kiosk/start` that takes
-  `{ sessionId, selfieKey, sceneId }`, mints the workflow with the
-  `publicOrigin` of the request, redirects to the status screen).
-- 6.5 — Kiosk-styled status screen (consumes the existing
-  `/api/session/:id/ws` for live updates instead of the `/test-workflow-
-  moderate/:id` dev page).
-- 6.6 — Done / "thanks" screen with the postcard + QR-back-to-pickup hint.
+```
+/kiosk (idle)
+  → /kiosk/capture   getUserMedia, shutter, uploads to R2 at kiosk/<sid>/selfie.jpg
+  → /kiosk/scene     2×3 scene grid rendered server-side from KV, tap stashes to sessionStorage
+  → /kiosk/review    Selfie + chosen scene card, "Make my postcard" fires POST /api/kiosk/start
+  → /kiosk/status/:instanceId?session=<sid>
+                     4-step stepper driven by SessionDO WebSocket
+                     (queued/moderating → generating → compositing → done)
+                     auto-redirects to /kiosk/done after done frame
+  → /kiosk/done?session=<sid>
+                     Postcard preview, QR (top-right header → /p/:sid),
+                     "Pick up at counter" banner, 60s countdown with
+                     tap-to-reset, Start over → /kiosk
+```
+
+sessionStorage keys used across the flow:
+- `kiosk:selfie` — `{ sessionId, selfieKey, size, capturedAt, sceneId, sceneName, sceneEmoji, sceneChosenAt }` — cleared on workflow submit
+- `kiosk:done` — `{ sessionId, sceneId, sceneName, selfieKey, caricatureKey, postcardKey, postcardUrl, finishedAt }` — set by status screen on `done` WS frame, cleared by done screen on auto-return
 
 ### Architectural pivot during Phase 5
 
@@ -179,9 +180,20 @@ npx wrangler kv key put --binding=CONFIG --remote scenes --path=seed/scenes.json
 
 ## Endpoint map
 
+### Kiosk app (Phase 6 — live)
+- `GET /kiosk` — idle screen
+- `GET /kiosk/capture` — selfie capture (getUserMedia)
+- `POST /api/kiosk/selfie` — uploads selfie to R2, returns `{ sessionId, selfieKey }`
+- `GET /kiosk/scene` — 2×3 scene picker (server-rendered from KV)
+- `GET /kiosk/review` — review screen with "Make my postcard" CTA
+- `POST /api/kiosk/start` — validates `{ sessionId, selfieKey, sceneId }`, mints workflow, returns `{ instanceId, statusUrl }`
+- `GET /kiosk/status/:instanceId?session=<sid>` — live stepper (SessionDO WebSocket)
+- `GET /kiosk/done?session=<sid>` — done screen: postcard, QR, countdown
+- `GET /api/kiosk/qr?url=<encoded>` — returns `qrPng(url, 400)` as `image/png` (origin-locked)
+
 ### Public landing
 - `GET /` — branded landing page with links to every test page
-- `GET /p/:id` — placeholder digital pickup landing (validates ID format)
+- `GET /p/:id` — digital pickup landing (shows postcard for UUID sessions)
 - `GET /api/health` — returns `{ status, step }`
 
 ### AI / Workflow tests
@@ -239,7 +251,11 @@ All test endpoints stay in place during development — they'll be cleaned up be
 14. **`kioskPage` shell uses `min-h-[100dvh] overscroll-none`** (not `h-full overflow-hidden`) so short desktop viewports don't clip content. iPad-locked feel comes from `overscroll-none` + `user-scalable=no` + `select-none touch-manipulation`, not from blocking overflow.
 15. **Capture screen mirrors the preview UI but NOT the canvas frame.** The `<video>` and frozen `<img>` previews use `-scale-x-100` so the user sees themselves naturally; the canvas-to-blob capture path draws the un-mirrored frame so text on shirts stays readable for FLUX/moderation.
 16. **Two storage prefixes for R2 selfies now:** legacy `workflow-test/<sessionId>/selfie.<ext>` (used by `/test-workflow-moderate` POST) and `kiosk/<sessionId>/selfie.jpg` (used by the new kiosk capture screen). `/api/run-img` accepts both `runs/` and `kiosk/` prefixes; the `workflow-test/` prefix is intentionally NOT readable through that proxy (test endpoints don't render uploaded selfies).
-17. **Kiosk session id is minted by the upload endpoint, not the client.** `POST /api/kiosk/selfie` generates `crypto.randomUUID()`, returns it, and the client stashes it. The eventual kiosk workflow trigger (6.4) should pass that same sessionId so the SessionDO ID matches the R2 prefix matches the QR target.
+17. **Kiosk session id is minted by the upload endpoint, not the client.** `POST /api/kiosk/selfie` generates `crypto.randomUUID()`, returns it, and the client stashes it. `POST /api/kiosk/start` passes that same sessionId so the SessionDO ID matches the R2 prefix matches the digital-pickup URL.
+18. **`/api/scenes` returns `{ count, scenes: [...] }`, not a bare array.** Don't accidentally iterate the wrapper object on the client — always read `.scenes`. The scene picker renders server-side to avoid this entirely; only the QR/done flow references it.
+19. **`state.sessionId` from the SessionDO can be `"(unset)"`** if the DO seeds itself via `ensureState` before the workflow's first `markStep` call. Always prefer the server-injected `sessionId` from the `?session=` query param (confirmed UUID) over `state.sessionId` from the WS frame when building redirect URLs or stashing to sessionStorage. This was the root cause of the QR-unavailable bug on `/kiosk/done`.
+20. **Printed postcard has no QR baked in** (removed in step 6.6). The QR for digital pickup lives only on the `/kiosk/done` screen (header, top-right, points to `/p/:sessionId`). The `/test-postcard` dev endpoint still passes `qrUrl` to `buildPostcard` so the QR feature is still testable.
+21. **`/api/kiosk/qr` is origin-locked.** The `url` param must start with the Worker's own origin or the endpoint returns 403. This prevents it being used as an open QR-code proxy.
 
 ---
 
@@ -278,13 +294,13 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 5.3 ✅ WebSocket endpoint (hibernation API)
 - 5.4 ✅ Workflow pushes live state to SessionDO end-to-end
 
-### Phase 6 — Kiosk App (iPad) 🚧
+### Phase 6 — Kiosk App (iPad) ✅
 - 6.1 ✅ Idle screen
 - 6.2 ✅ Camera capture screen (getUserMedia + R2 upload)
-- 6.3 ⏳ **NEXT** — Scene picker screen
-- 6.4 Submit to backend (mint workflow from kiosk)
-- 6.5 Kiosk-styled status screen (subscribes to SessionDO)
-- 6.6 Done screen
+- 6.3 ✅ Scene picker (2×3 grid, server-rendered from KV)
+- 6.4 ✅ Review screen + POST /api/kiosk/start workflow trigger
+- 6.5 ✅ Live status screen (4-step stepper, SessionDO WebSocket)
+- 6.6 ✅ Done screen (postcard, QR, 60s countdown, auto-return to idle)
 
 ### Phase 7 — Big Screen App (slimmed down — see pivot note above)
 - 7.1 Static gallery layout (recent caricatures + QR + project info)
@@ -334,18 +350,30 @@ All test endpoints stay in place during development — they'll be cleaned up be
 
 ---
 
-## Step 4.3 plan (next up)
+## Phase 7 plan (next up)
 
-Extend the workflow with a `generate` step:
+Big Screen App — a separate display (TV/monitor) that shows a gallery of
+recently completed caricatures + project info + QR to start a session.
+No real-time per-session feed (that's the iPad's job). Refreshes on a slow
+interval from D1.
 
-1. Add `sceneId` to `CaricaturePayload`
-2. After `moderate` passes, fetch the selfie bytes from R2 + the scene prompt from KV
-3. Call FLUX.2 image-to-image with the selfie as `input_image_0`
-4. Save the caricature to R2 at `runs/<sessionId>/caricature.jpg`
-5. Step uses 2 retries with exponential backoff
-6. Update `/test-workflow-moderate` form to also pick a scene
-7. Verify by:
-   - Trigger with a clean selfie + scene → workflow output includes `generate.caricatureKey`
-   - Force a failure (mock?) → see 2 retries in workflow dashboard
+Agreed scope (slimmed down from original plan — see architectural pivot):
 
-Use the existing `runFlux` helper in `src/index.ts` — likely needs to be moved to `src/lib/flux.ts` so the workflow can import it. Apply the same extraction pattern as `src/lib/moderation.ts`.
+### 7.1 — Static gallery layout
+- New route `GET /display` using the standard `page()` shell (not `kioskPage`)
+- Shows the last 6–8 completed postcards from D1 (`SELECT * FROM sessions WHERE status='completed' ORDER BY completed_at DESC LIMIT 8`)
+- Each card: postcard image from R2 via `/api/run-img`, scene name, timestamp
+- Cloudflare brand header + "I 🧡 NY" wordmark + "Tap below to get yours" CTA
+- No interactivity — this is a passive display
+
+### 7.2 — Periodic refresh
+- Client-side `setInterval` every 30s that re-fetches a new `/api/display/feed`
+  endpoint returning `{ sessions: [...] }` from D1
+- Only re-renders cards that changed (diff by sessionId) to avoid flash
+- Add `GET /api/display/feed` that returns the last 8 completed sessions
+  (sessionId, sceneId, sceneName, postcardKey, completedAt)
+
+### 7.3 — Branding pass
+- Idle animation (subtle shimmer / floating particles in brand colours)
+- "Built end-to-end on Cloudflare" tech badge
+- QR pointing to the production URL for people who want to learn more
