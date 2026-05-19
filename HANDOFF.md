@@ -20,7 +20,7 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 8 complete ✅
+## Current status — Phase 9 complete ✅
 
 Most recent commits:
 ```
@@ -32,7 +32,7 @@ d39a580  feat: workflow enqueues print job after store step (step 8.2)
 e28943e  feat: add PRINT_QUEUE binding + HTTP pull consumer (step 8.1)
 ```
 
-**Next up:** Phase 9 — Digital Copy.
+**Next up:** Phase 10 — Admin Dashboard.
 
 ### Phase 6 — complete kiosk flow
 
@@ -97,6 +97,24 @@ when the attendee taps "Print my postcard" on `/kiosk/done` (see gotcha #25).
   private network. Phase 10 auth gate will cover this.
 - **Test endpoint:** `GET /api/test-print-job?session=<id>` seeds a print
   job for any existing completed session (useful for dev/testing).
+
+### Phase 9 — digital copy ✅
+
+The `/p/:id` route is the attendee-facing digital pickup landing. Scanned via
+the QR on `/kiosk/done` or accessed from a shared link.
+
+- Queries D1 for session metadata (scene_name, postcard_key, completed_at, email)
+- Three states: **completed** (full landing with postcard, Download, Share, email
+  opt-in), **in-progress** (spinner + auto-refresh), **not found** (branded 404)
+- `POST /api/p/:id/email` captures email opt-in → stored in D1 → fires
+  `sendPostcardEmail()` via `waitUntil` (currently stubbed — see gotcha #26)
+- Download button uses `?download=1` on `/api/run-img` which sets
+  `content-disposition: attachment` with a friendly filename
+- Share button uses `navigator.share` on mobile, clipboard copy on desktop
+- Branded 404 covers all `/p/*` paths — truncated UUIDs, typos, bare `/p`,
+  nested `/p/foo/bar`
+- Print button on `/kiosk/done` is opt-in: `POST /api/kiosk/print` with
+  idempotency + 2s status polling via `GET /api/kiosk/print/:jobId/status`
 
 ### Architectural pivot during Phase 5
 
@@ -384,11 +402,11 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 8.5 ✅ Mock printer driver (`Printer` interface + `MockPrinter` with spool dir)
 - 8.6 ✅ DNP DS620A driver (`DnpDs620Printer` via CUPS/lp, env-selectable)
 
-### Phase 9 — Digital Copy
-- 9.1 Landing page route
-- 9.2 Email opt-in form
-- 9.3 Cloudflare Email integration
-- 9.4 QR verification on actual postcard
+### Phase 9 — Digital Copy ✅
+- 9.1 ✅ Landing page route (`/p/:id` — D1 lookup, postcard, download, share, branded 404 states)
+- 9.2 ✅ Email opt-in form (POST /api/p/:id/email, stores in D1, server-rendered states)
+- 9.3 ✅ Cloudflare Email integration (send_email binding + stubbed sender — see gotcha #26)
+- 9.4 ✅ QR verification (QR removed from printed postcard in 6.6; digital QR on /kiosk/done works end-to-end)
 
 ### Phase 10 — Admin Dashboard
 - 10.1 Auth gate
