@@ -35,6 +35,36 @@ const page = (title: string, body: string) => `<!doctype html>
 	</body>
 </html>`;
 
+/**
+ * Kiosk shell — used for every /kiosk/* screen. Differs from the dev `page()`
+ * shell in three ways:
+ *   1. viewport locks zoom (kiosks shouldn't be pinch-zoomable)
+ *   2. `viewport-fit=cover` so we can paint behind the home indicator
+ *   3. `html.h-full` so full-bleed flex layouts work without min-height hacks
+ *
+ * No dev chrome (no /api/health link, no nav). The kiosk runs in Safari
+ * Guided Access — anything that helps the user escape the flow is a bug.
+ */
+const kioskPage = (title: string, body: string) => `<!doctype html>
+<html lang="en" class="h-full">
+	<head>
+		<meta charset="utf-8" />
+		<title>${title}</title>
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+		/>
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="theme-color" content="#000000" />
+		<link rel="stylesheet" href="/app.css" />
+		<link rel="icon" href="/cloudflare-logo.png" />
+	</head>
+	<body class="h-full bg-cf-ink text-white font-display antialiased overflow-hidden select-none touch-manipulation">
+		${body}
+	</body>
+</html>`;
+
 app.get("/", (c) => {
 	return c.html(
 		page(
@@ -57,11 +87,14 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 5.4 &middot; Workflow + Session DO end-to-end
+					Step 6.1 &middot; Kiosk idle screen
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/test-workflow-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						⚡ Full pipeline + live Session DO (step 5.4) →
+					<a href="/kiosk" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						📱 Kiosk idle screen (step 6.1) →
+					</a>
+					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						⚡ Full pipeline + live Session DO (step 5.4)
 					</a>
 					<a href="/test-session" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						🪪 Session DO playground (no workflow)
@@ -94,7 +127,87 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "5.4" });
+	return c.json({ status: "ok", step: "6.1" });
+});
+
+// ---------------------------------------------------------------------------
+// Kiosk app (Phase 6) — the iPad experience.
+//
+// 6.1 (this commit): static idle screen with a big "Tap to start" CTA that
+// links to the (placeholder) /kiosk/capture screen. Tuned for a 10.9" iPad
+// in portrait running Safari Guided Access.
+// ---------------------------------------------------------------------------
+
+/**
+ * Idle / landing screen. This is what passersby see when no one is using
+ * the booth. Big visual, one obvious action.
+ * GET /kiosk
+ */
+app.get("/kiosk", (c) => {
+	return c.html(
+		kioskPage(
+			"I 🧡 NY — Tap to start",
+			`<main class="h-full w-full flex flex-col">
+				<header class="px-8 pt-10 pb-4 flex items-center gap-3 text-white/70">
+					<img src="/cloudflare-logo.png" alt="" class="h-6 w-6" />
+					<span class="text-xs uppercase tracking-[0.25em]">Cloudflare · NY Tech Week 2026</span>
+				</header>
+
+				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
+					<div class="flex items-center gap-4 text-[clamp(4rem,18vw,11rem)] font-bold leading-none">
+						<span>I</span>
+						<img src="/cloudflare-logo.png" alt="Cloudflare"
+							class="h-[0.85em] w-auto drop-shadow-[0_0_40px_rgba(246,130,31,0.55)]" />
+						<span>NY</span>
+					</div>
+
+					<h1 class="mt-10 text-[clamp(2rem,6vw,3.5rem)] font-bold leading-tight text-balance">
+						AI Caricature Booth
+					</h1>
+					<p class="mt-4 max-w-md text-lg text-white/70 text-balance">
+						Take a selfie, pick an iconic NYC scene, walk away with a printed postcard.
+						Built end-to-end on Cloudflare.
+					</p>
+
+					<a href="/kiosk/capture"
+						class="mt-16 inline-flex items-center justify-center rounded-full bg-cf-orange px-16 py-7 text-2xl font-bold text-black shadow-[0_0_60px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
+						Tap to start
+					</a>
+					<p class="mt-6 text-xs uppercase tracking-[0.3em] text-white/40">
+						Takes about 30 seconds
+					</p>
+				</section>
+
+				<footer class="px-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
+					Photos processed on-device · No data stored after the event
+				</footer>
+			</main>`,
+		),
+	);
+});
+
+/**
+ * Capture screen — placeholder until step 6.2 wires the camera. For now it
+ * just confirms navigation works and links back to idle.
+ * GET /kiosk/capture
+ */
+app.get("/kiosk/capture", (c) => {
+	return c.html(
+		kioskPage(
+			"Capture — coming in 6.2",
+			`<main class="h-full w-full flex flex-col items-center justify-center px-8 text-center">
+				<div class="text-[clamp(2rem,8vw,5rem)] font-bold leading-tight">Camera screen</div>
+				<p class="mt-4 max-w-md text-lg text-white/70">
+					This is the placeholder for the capture screen. Step 6.2 will wire up the
+					camera, framing overlay, and shutter button.
+				</p>
+				<a href="/kiosk"
+					class="mt-12 inline-flex items-center justify-center rounded-full border border-white/30 px-10 py-4 text-base text-white/80 hover:border-white/60 hover:text-white active:scale-[0.98] transition">
+					← Back to idle
+				</a>
+			</main>`,
+		),
+	);
 });
 
 /**
