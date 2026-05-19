@@ -57,14 +57,14 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 5.3 &middot; Session DO WebSockets
+					Step 5.4 &middot; Workflow + Session DO end-to-end
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/test-session" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						🪪 Session DO + live WebSocket (step 5.3) →
+					<a href="/test-workflow-moderate" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
+						⚡ Full pipeline + live Session DO (step 5.4) →
 					</a>
-					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						⚡ Full workflow pipeline (selfie + scene → postcard)
+					<a href="/test-session" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
+						🪪 Session DO playground (no workflow)
 					</a>
 					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚙️ Trigger bare workflow (no input)
@@ -94,7 +94,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "5.3" });
+	return c.json({ status: "ok", step: "5.4" });
 });
 
 /**
@@ -646,7 +646,7 @@ app.post("/api/test-workflow-moderate", async (c) => {
 
 	const url = new URL(c.req.url);
 	url.pathname = `/test-workflow-moderate/${instance.id}`;
-	url.search = "";
+	url.search = `?session=${sessionId}`;
 	return c.redirect(url.toString(), 303);
 });
 
@@ -657,15 +657,24 @@ app.post("/api/test-workflow-moderate", async (c) => {
  */
 app.get("/test-workflow-moderate/:id", (c) => {
 	const id = c.req.param("id");
-	if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) {
+	if (!UUID_RE.test(id)) {
 		return c.notFound();
 	}
+	const sessionFromQs = c.req.query("session");
+	const sessionId =
+		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
+
 	return c.html(
 		page(
 			`Workflow ${id.slice(0, 8)}…`,
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12 max-w-3xl mx-auto">
 				<h1 class="text-3xl font-bold mb-2">Workflow run</h1>
 				<p class="text-white/60 text-sm">Instance: <code class="text-white/80">${id}</code></p>
+				${
+					sessionId
+						? `<p class="text-white/60 text-sm mt-1">Session: <code class="text-white/80">${sessionId}</code></p>`
+						: ""
+				}
 				<section class="w-full mt-8 rounded-2xl bg-white/5 border border-white/10 p-6">
 					<div class="flex items-center gap-3">
 						<span id="wf-pulse" class="size-3 rounded-full bg-yellow-400 animate-pulse"></span>
@@ -676,6 +685,24 @@ app.get("/test-workflow-moderate/:id", (c) => {
 						<dt class="text-white/50">Elapsed</dt><dd id="wf-elapsed" class="text-white/80">0.0s</dd>
 					</dl>
 				</section>
+				${
+					sessionId
+						? `<section class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6">
+								<div class="flex items-center justify-between mb-2">
+									<h2 class="text-sm font-semibold text-white/60">Session DO (live)</h2>
+									<div class="flex items-center gap-2 text-xs">
+										<span id="sd-dot" class="size-2 rounded-full bg-zinc-500"></span>
+										<span id="sd-label" class="text-white/50">connecting…</span>
+									</div>
+								</div>
+								<div class="flex items-center gap-3 mb-3">
+									<span id="sd-status-dot" class="size-3 rounded-full bg-yellow-400"></span>
+									<span id="sd-status" class="text-base font-semibold">queued</span>
+								</div>
+								<pre id="sd-raw" class="text-[11px] whitespace-pre-wrap break-words text-white/60">awaiting first frame…</pre>
+							</section>`
+						: ""
+				}
 				<section id="wf-preview" class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6 hidden">
 					<h2 class="text-sm font-semibold text-white/60 mb-4">Artifacts</h2>
 					<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -698,6 +725,7 @@ app.get("/test-workflow-moderate/:id", (c) => {
 				<script>
 					(function () {
 						const id = ${JSON.stringify(id)};
+						const sessionId = ${JSON.stringify(sessionId)};
 						const labelEl = document.getElementById("wf-status-label");
 						const pulseEl = document.getElementById("wf-pulse");
 						const elapsedEl = document.getElementById("wf-elapsed");
@@ -707,6 +735,66 @@ app.get("/test-workflow-moderate/:id", (c) => {
 						const caricatureEl = document.getElementById("wf-caricature");
 						const postcardEl = document.getElementById("wf-postcard");
 						const postcardLinkEl = document.getElementById("wf-postcard-link");
+						const sdDot = document.getElementById("sd-dot");
+						const sdLabel = document.getElementById("sd-label");
+						const sdStatusDot = document.getElementById("sd-status-dot");
+						const sdStatusEl = document.getElementById("sd-status");
+						const sdRawEl = document.getElementById("sd-raw");
+
+						const sessionColorMap = {
+							queued:       "bg-yellow-400",
+							moderating:   "bg-blue-400",
+							generating:   "bg-blue-400",
+							compositing:  "bg-blue-400",
+							done:         "bg-emerald-500",
+							errored:      "bg-red-500",
+						};
+						const sessionTerminal = new Set(["done", "errored"]);
+
+						function applySessionState(state) {
+							if (!state) return;
+							sdStatusEl.textContent = state.status;
+							sdStatusDot.className = "size-3 rounded-full " + (sessionColorMap[state.status] || "bg-zinc-400") + (sessionTerminal.has(state.status) ? "" : " animate-pulse");
+							sdRawEl.textContent = JSON.stringify(state, null, 2);
+						}
+
+						if (sessionId) {
+							let sdWs;
+							let sdBackoff = 500;
+							function setSdStatus(label, color) {
+								sdLabel.textContent = label;
+								sdDot.className = "size-2 rounded-full " + color;
+							}
+							function sdConnect() {
+								const proto = location.protocol === "https:" ? "wss:" : "ws:";
+								const url = proto + "//" + location.host + "/api/session/" + sessionId + "/ws";
+								setSdStatus("connecting…", "bg-yellow-400 animate-pulse");
+								sdWs = new WebSocket(url);
+								sdWs.addEventListener("open", function () {
+									setSdStatus("live", "bg-emerald-500");
+									sdBackoff = 500;
+								});
+								sdWs.addEventListener("message", function (e) {
+									if (e.data === "pong") return;
+									try {
+										const msg = JSON.parse(e.data);
+										if (msg.type === "state") applySessionState(msg.state);
+										else if (msg.type === "deleted") {
+											setSdStatus("deleted", "bg-red-500");
+											sdRawEl.textContent = "session DO storage cleared";
+										}
+									} catch (err) {
+										console.error("bad ws frame:", e.data, err);
+									}
+								});
+								sdWs.addEventListener("close", function () {
+									setSdStatus("disconnected — retrying", "bg-red-500");
+									setTimeout(sdConnect, sdBackoff);
+									sdBackoff = Math.min(sdBackoff * 2, 10000);
+								});
+							}
+							sdConnect();
+						}
 
 						const t0 = Date.now();
 						startedEl.textContent = new Date().toLocaleTimeString();
