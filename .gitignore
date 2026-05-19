@@ -169,5 +169,6 @@ dist
 # Built CSS (tailwind generates from src/styles/app.css)
 public/app.css
 
-# Print agent output PDFs
+# Print agent output PDFs + mock printer spool
 print-agent/output/
+print-agent/spool/

@@ -1,11 +1,17 @@
 import "dotenv/config";
 import { writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fetchJobs, ackJob } from "./queue.js";
 import { buildPrintPdf } from "./pdf.js";
+import { MockPrinter, type Printer } from "./printer.js";
 import type { AgentConfig, PrintJob } from "./types.js";
 
-const OUTPUT_DIR = join(import.meta.dirname ?? ".", "..", "output");
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const OUTPUT_DIR = join(__dirname, "..", "output");
+
+// Swap this for a real printer driver when hardware is decided (step 8.6)
+const printer: Printer = new MockPrinter();
 
 // ---------------------------------------------------------------------------
 // Config from environment
@@ -54,14 +60,18 @@ async function handleJob(config: AgentConfig, job: PrintJob): Promise<void> {
 	// 2. Wrap in print-ready 4×6" PDF
 	const pdfBytes = await buildPrintPdf(jpegBytes);
 
-	// 3. Save PDF to output directory
+	// 3. Save PDF to output directory (archive copy)
 	await mkdir(OUTPUT_DIR, { recursive: true });
 	const pdfPath = join(OUTPUT_DIR, `${job.session_id}.pdf`);
 	await writeFile(pdfPath, pdfBytes);
 	console.log(`  [pdf] written to ${pdfPath} (${pdfBytes.byteLength} bytes)`);
 
-	// TODO (8.5): send to mock printer driver
-	// TODO (8.6): send to real printer
+	// 4. Send to printer
+	const result = await printer.print(new Uint8Array(pdfBytes), job.id);
+	if (!result.success) {
+		throw new Error(`Printer failed: ${result.message}`);
+	}
+	console.log(`  [print] ${result.message} (${result.durationMs}ms)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +110,7 @@ async function main() {
 
 	console.log("=== NYC Caricature Booth — Print Agent ===");
 	console.log(`  worker:     ${config.workerUrl}`);
+	console.log(`  printer:    ${printer.name}`);
 	console.log(`  poll every: ${config.pollIntervalMs}ms`);
 	console.log(`  batch size: ${config.batchSize}`);
 	console.log("");
