@@ -54,6 +54,18 @@ export type StoreStepOutput = {
 };
 
 /**
+ * Message sent to PRINT_QUEUE after a postcard is stored.
+ * The print agent pulls these via the HTTP API and prints them.
+ */
+export type PrintJobMessage = {
+	sessionId: string;
+	postcardKey: string;
+	postcardUrl: string;
+	sceneName: string;
+	enqueuedAt: string;
+};
+
+/**
  * Caricature pipeline.
  *
  * Step 4.1: bare skeleton (hello).
@@ -289,6 +301,16 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				},
 			);
 
+			// Enqueue a print job for the local print agent. Best-effort —
+			// a queue failure must not block the workflow or the UX.
+			await this.enqueuePrintJob({
+				sessionId,
+				postcardKey: composite.postcardKey,
+				postcardUrl: composite.postcardUrl,
+				sceneName: generate.sceneName,
+				enqueuedAt: new Date().toISOString(),
+			});
+
 			// Terminal: push the full set of artifact keys into the DO so any
 			// final WS frame contains everything a client needs to render the
 			// done screen, even if it just connected.
@@ -334,6 +356,22 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 			// a DO crash should never break the workflow.
 			console.warn(
 				`[caricature-workflow] markSession failed session=${sessionId} next=${next}: ${String(err)}`,
+			);
+		}
+	}
+
+	// -------- Print Queue helper --------
+
+	private async enqueuePrintJob(job: PrintJobMessage): Promise<void> {
+		try {
+			await this.env.PRINT_QUEUE.send(job);
+			console.log(
+				`[caricature-workflow] enqueued print job session=${job.sessionId}`,
+			);
+		} catch (err) {
+			// Best-effort: print queue failures must not break the workflow.
+			console.warn(
+				`[caricature-workflow] enqueuePrintJob failed session=${job.sessionId}: ${String(err)}`,
 			);
 		}
 	}

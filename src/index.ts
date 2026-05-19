@@ -133,7 +133,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "8.1" });
+	return c.json({ status: "ok", step: "8.2" });
 });
 
 // ---------------------------------------------------------------------------
@@ -3067,6 +3067,22 @@ app.get("/api/test-db", async (c) => {
 		inserted,
 		recent: recent.results,
 	});
+});
+
+/**
+ * Test endpoint: sends a test message to the PRINT_QUEUE.
+ * GET /api/test-print-queue
+ */
+app.get("/api/test-print-queue", async (c) => {
+	const testJob = {
+		sessionId: crypto.randomUUID(),
+		postcardKey: "test/postcard.jpg",
+		postcardUrl: "https://nyc-caricature-booth.examples.workers.dev/p/test",
+		sceneName: "Test Scene",
+		enqueuedAt: new Date().toISOString(),
+	};
+	await c.env.PRINT_QUEUE.send(testJob);
+	return c.json({ ok: true, sent: testJob });
 });
 
 /**
