@@ -806,7 +806,7 @@ app.get("/admin", async (c) => {
 							toast("Resent email for " + shortId);
 						});
 					} else if (action === "delete-session") {
-						if (!confirm("Permanently delete ALL data for session " + shortId + "…?\n\nThis removes the selfie, caricature, postcard, print jobs, and email from our systems. Cannot be undone.")) {
+						if (!confirm("Permanently delete ALL data for session " + shortId + "...?" + "\\n\\n" + "This removes the selfie, caricature, postcard, print jobs, and email from our systems. Cannot be undone.")) {
 							btn.disabled = false;
 							return;
 						}
