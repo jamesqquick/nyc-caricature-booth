@@ -19,7 +19,9 @@ import {
 } from "./lib/admin-auth";
 import {
 	type AdminSessionRow,
+	type AdminStats,
 	loadAdminSessions,
+	loadAdminStats,
 } from "./lib/admin-data";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
@@ -153,7 +155,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "10.2" });
+	return c.json({ status: "ok", step: "10.3" });
 });
 
 // ---------------------------------------------------------------------------
@@ -225,6 +227,50 @@ function escapeHtml(s: string): string {
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;")
 		.replace(/'/g, "&#39;");
+}
+
+function adminFmtAvg(secs: number | null): string {
+	if (secs == null) return "—";
+	if (secs < 60) return `${secs.toFixed(1)}s`;
+	const m = Math.floor(secs / 60);
+	const s = Math.round(secs - m * 60);
+	return `${m}m ${s}s`;
+}
+
+function statCard(label: string, value: string, accentCls = "text-white"): string {
+	return (
+		`<div class="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">` +
+		`<div class="text-[10px] uppercase tracking-widest text-white/40">${escapeHtml(label)}</div>` +
+		`<div class="mt-1 text-2xl font-bold ${accentCls}">${escapeHtml(value)}</div>` +
+		`</div>`
+	);
+}
+
+function renderAdminStatCards(stats: AdminStats): string {
+	return (
+		statCard("Total", String(stats.totalSessions)) +
+		statCard("Completed", String(stats.completed), "text-emerald-300") +
+		statCard("Errored", String(stats.errored), "text-red-300") +
+		statCard("Avg pipeline", adminFmtAvg(stats.avgPipelineSec)) +
+		statCard("Emails", String(stats.emailsCollected), "text-cf-orange") +
+		statCard("Printed", String(stats.postcardsPrinted), "text-cf-orange")
+	);
+}
+
+function renderAdminSceneBreakdown(stats: AdminStats): string {
+	if (stats.sceneBreakdown.length === 0) {
+		return `<span class="text-xs text-white/40">No scenes used yet.</span>`;
+	}
+	return stats.sceneBreakdown
+		.map(
+			(s) =>
+				`<span class="inline-flex items-center gap-2 rounded-full bg-white/[0.04] border border-white/10 px-3 py-1.5 text-xs">` +
+				`<span class="text-white/80">${escapeHtml(s.sceneName)}</span>` +
+				`<span class="text-white/40">·</span>` +
+				`<span class="font-mono text-cf-orange">${s.count}</span>` +
+				`</span>`,
+		)
+		.join("");
 }
 
 function renderAdminTableBody(rows: AdminSessionRow[]): string {
@@ -357,8 +403,11 @@ app.get("/admin/logout", (c) => {
  * every 10s and re-renders the <tbody>. Stats / manual controls land in 10.3 + 10.4.
  */
 app.get("/admin", async (c) => {
-	const rows = await loadAdminSessions(c.env);
-	const initialJson = JSON.stringify({ sessions: rows });
+	const [rows, stats] = await Promise.all([
+		loadAdminSessions(c.env),
+		loadAdminStats(c.env),
+	]);
+	const initialJson = JSON.stringify({ sessions: rows, stats });
 
 	return c.html(
 		page(
@@ -380,6 +429,20 @@ app.get("/admin", async (c) => {
 						<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
 					</div>
 				</header>
+
+				<section id="admin-stats" class="mb-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+					${renderAdminStatCards(stats)}
+				</section>
+
+				<section class="mb-8 rounded-xl border border-white/10 bg-white/[0.02] px-5 py-4">
+					<div class="flex items-center justify-between mb-3">
+						<h2 class="text-sm font-semibold text-white/80">Sessions by scene</h2>
+						<span class="text-[11px] uppercase tracking-widest text-white/40">All-time</span>
+					</div>
+					<div id="admin-scene-breakdown" class="flex flex-wrap gap-2">
+						${renderAdminSceneBreakdown(stats)}
+					</div>
+				</section>
 
 				<section class="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
 					<div class="overflow-x-auto">
@@ -411,10 +474,12 @@ app.get("/admin", async (c) => {
 			<script>
 			(function () {
 				var initialEl = document.getElementById("admin-initial");
-				var lastSnapshot = JSON.parse(initialEl.textContent || '{"sessions":[]}');
+				var lastSnapshot = JSON.parse(initialEl.textContent || '{"sessions":[],"stats":null}');
 				var tbody = document.getElementById("admin-tbody");
 				var rowCount = document.getElementById("admin-row-count");
 				var lastUpdated = document.getElementById("admin-last-updated");
+				var statsEl = document.getElementById("admin-stats");
+				var sceneEl = document.getElementById("admin-scene-breakdown");
 
 				function escapeHtml(s) {
 					return String(s == null ? "" : s)
@@ -472,28 +537,79 @@ app.get("/admin", async (c) => {
 						+ '</tr>';
 				}
 
-				function render(snapshot) {
-					var sessions = snapshot.sessions || [];
+				function fmtAvg(secs) {
+					if (secs == null) return "—";
+					if (secs < 60) return secs.toFixed(1) + "s";
+					var m = Math.floor(secs / 60);
+					var s = Math.round(secs - m * 60);
+					return m + "m " + s + "s";
+				}
+
+				function renderStatCard(label, value, accent) {
+					var accentCls = accent || "text-white";
+					return ''
+						+ '<div class="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">'
+						+ '<div class="text-[10px] uppercase tracking-widest text-white/40">' + escapeHtml(label) + '</div>'
+						+ '<div class="mt-1 text-2xl font-bold ' + accentCls + '">' + escapeHtml(value) + '</div>'
+						+ '</div>';
+				}
+
+				function renderStats(stats) {
+					if (!stats) return;
+					statsEl.innerHTML = ''
+						+ renderStatCard("Total", String(stats.totalSessions))
+						+ renderStatCard("Completed", String(stats.completed), "text-emerald-300")
+						+ renderStatCard("Errored", String(stats.errored), "text-red-300")
+						+ renderStatCard("Avg pipeline", fmtAvg(stats.avgPipelineSec))
+						+ renderStatCard("Emails", String(stats.emailsCollected), "text-cf-orange")
+						+ renderStatCard("Printed", String(stats.postcardsPrinted), "text-cf-orange");
+
+					var scenes = stats.sceneBreakdown || [];
+					if (scenes.length === 0) {
+						sceneEl.innerHTML = '<span class="text-xs text-white/40">No scenes used yet.</span>';
+					} else {
+						sceneEl.innerHTML = scenes.map(function (s) {
+							return '<span class="inline-flex items-center gap-2 rounded-full bg-white/[0.04] border border-white/10 px-3 py-1.5 text-xs">'
+								+ '<span class="text-white/80">' + escapeHtml(s.sceneName) + '</span>'
+								+ '<span class="text-white/40">·</span>'
+								+ '<span class="font-mono text-cf-orange">' + s.count + '</span>'
+								+ '</span>';
+						}).join("");
+					}
+				}
+
+				function renderSessions(sessions) {
 					if (sessions.length === 0) {
 						tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>';
 					} else {
 						tbody.innerHTML = sessions.map(renderRow).join("");
 					}
 					rowCount.textContent = String(sessions.length);
+				}
+
+				function render(snapshot) {
+					renderSessions(snapshot.sessions || []);
+					if (snapshot.stats) renderStats(snapshot.stats);
 					lastUpdated.textContent = "Updated " + new Date().toLocaleTimeString();
 				}
 
 				async function poll() {
 					try {
-						var r = await fetch("/api/admin/sessions", { credentials: "same-origin" });
-						if (r.status === 401) {
+						var results = await Promise.all([
+							fetch("/api/admin/sessions", { credentials: "same-origin" }),
+							fetch("/api/admin/stats",    { credentials: "same-origin" }),
+						]);
+						if (results[0].status === 401 || results[1].status === 401) {
 							window.location.href = "/admin/login";
 							return;
 						}
-						if (!r.ok) throw new Error("HTTP " + r.status);
-						var j = await r.json();
-						lastSnapshot = j;
-						render(j);
+						if (!results[0].ok || !results[1].ok) {
+							throw new Error("HTTP " + results[0].status + "/" + results[1].status);
+						}
+						var sessionsBody = await results[0].json();
+						var stats = await results[1].json();
+						lastSnapshot = { sessions: sessionsBody.sessions, stats: stats };
+						render(lastSnapshot);
 					} catch (err) {
 						console.error("[admin] poll failed:", err);
 					}
@@ -514,6 +630,15 @@ app.get("/admin", async (c) => {
 app.get("/api/admin/sessions", async (c) => {
 	const rows = await loadAdminSessions(c.env);
 	return c.json({ sessions: rows });
+});
+
+/**
+ * Aggregate stats for the dashboard cards. Polled every 10s alongside sessions.
+ * GET /api/admin/stats  →  AdminStats
+ */
+app.get("/api/admin/stats", async (c) => {
+	const stats = await loadAdminStats(c.env);
+	return c.json(stats);
 });
 
 // ---------------------------------------------------------------------------

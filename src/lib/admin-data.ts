@@ -97,6 +97,99 @@ export async function loadAdminSessions(env: Env): Promise<AdminSessionRow[]> {
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Stats (Phase 10.3)
+// ---------------------------------------------------------------------------
+
+export interface SceneBreakdownEntry {
+	sceneId: string;
+	sceneName: string;
+	count: number;
+}
+
+export interface AdminStats {
+	totalSessions: number;
+	completed: number;
+	errored: number;
+	inFlight: number;
+	/** Average pipeline duration (completed sessions only), seconds. Null if no completed sessions. */
+	avgPipelineSec: number | null;
+	emailsCollected: number;
+	postcardsPrinted: number;
+	sceneBreakdown: SceneBreakdownEntry[];
+}
+
+/**
+ * One-shot dashboard stats. Two D1 queries:
+ *   1. Aggregate counts/avg over sessions + a single count over print_jobs.
+ *   2. Scene breakdown grouped by scene_id.
+ *
+ * The aggregate query uses COUNT(CASE WHEN …) so we only scan `sessions` once.
+ * Pipeline avg is computed in SQL as AVG(completed_at - created_at) over
+ * completed rows — kept in seconds and rounded at the JSON layer.
+ */
+export async function loadAdminStats(env: Env): Promise<AdminStats> {
+	const [aggRes, printedRes, scenesRes] = await env.DB.batch<
+		Record<string, number | null>
+	>([
+		env.DB.prepare(
+			`SELECT
+				COUNT(*) AS total,
+				COUNT(CASE WHEN status = 'completed' THEN 1 END) AS completed,
+				COUNT(CASE WHEN status = 'errored'   THEN 1 END) AS errored,
+				COUNT(CASE WHEN status NOT IN ('completed', 'errored') THEN 1 END) AS in_flight,
+				COUNT(CASE WHEN email IS NOT NULL AND email != '' THEN 1 END) AS emails,
+				AVG(CASE WHEN status = 'completed' AND completed_at IS NOT NULL AND created_at IS NOT NULL
+				         THEN (completed_at - created_at) END) AS avg_pipeline_sec
+			 FROM sessions`,
+		),
+		env.DB.prepare(
+			`SELECT COUNT(*) AS printed FROM print_jobs WHERE status = 'printed'`,
+		),
+		env.DB.prepare(
+			`SELECT
+				COALESCE(scene_id, 'unknown') AS scene_id,
+				COALESCE(scene_name, 'Unknown') AS scene_name,
+				COUNT(*) AS count
+			 FROM sessions
+			 WHERE scene_id IS NOT NULL
+			 GROUP BY scene_id, scene_name
+			 ORDER BY count DESC`,
+		),
+	]);
+
+	const agg = aggRes.results[0] ?? {};
+	const printedRow = printedRes.results[0] ?? {};
+	const scenes = (scenesRes.results ?? []) as unknown as Array<{
+		scene_id: string;
+		scene_name: string;
+		count: number;
+	}>;
+
+	const avgRaw = agg.avg_pipeline_sec;
+	const avgPipelineSec =
+		typeof avgRaw === "number" && Number.isFinite(avgRaw) ? Math.round(avgRaw * 10) / 10 : null;
+
+	return {
+		totalSessions: numberOr0(agg.total),
+		completed: numberOr0(agg.completed),
+		errored: numberOr0(agg.errored),
+		inFlight: numberOr0(agg.in_flight),
+		avgPipelineSec,
+		emailsCollected: numberOr0(agg.emails),
+		postcardsPrinted: numberOr0(printedRow.printed),
+		sceneBreakdown: scenes.map((s) => ({
+			sceneId: s.scene_id,
+			sceneName: s.scene_name,
+			count: Number(s.count) || 0,
+		})),
+	};
+}
+
+function numberOr0(n: number | null | undefined): number {
+	return typeof n === "number" && Number.isFinite(n) ? n : 0;
+}
+
 /**
  * Mask an email like `jamesqquick@example.com` → `jam***@example.com`.
  * Returns null if the input is null/empty.
