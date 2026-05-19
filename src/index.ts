@@ -158,7 +158,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "10.4" });
+	return c.json({ status: "ok", step: "11.1" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1443,9 +1443,18 @@ app.get("/kiosk/capture", (c) => {
 				}
 
 				async function startCamera() {
-					setOverlay('<div class="text-xl font-semibold">Starting camera…</div><p class="mt-2 text-sm text-white/60">If you see a permissions prompt, tap Allow.</p>');
+					setOverlay(
+						'<div class="size-12 rounded-full border-2 border-cf-orange/40 border-t-cf-orange animate-spin mb-4"></div>' +
+						'<div class="text-xl font-semibold">Starting camera\u2026</div>' +
+						'<p class="mt-2 text-sm text-white/60">If you see a permissions prompt, tap Allow.</p>'
+					);
 					if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-						setOverlay('<div class="text-xl font-semibold text-red-300">This browser can\\'t access the camera.</div><p class="mt-2 text-sm text-white/60">Try Safari on iPad or Chrome on desktop.</p>');
+						setOverlay(
+							'<div class="size-16 rounded-full border-2 border-red-400/30 bg-red-500/10 flex items-center justify-center text-2xl mb-4" aria-hidden="true">\u26a0\ufe0f</div>' +
+							'<div class="text-xl font-semibold">Camera not supported</div>' +
+							'<p class="mt-2 text-sm text-white/60 max-w-xs">This browser can\\'t access the camera. Try Safari on iPad or Chrome on desktop.</p>' +
+							'<a href="/kiosk" class="mt-6 inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition">\u2190 Back to start</a>'
+						);
 						return;
 					}
 					try {
@@ -1465,14 +1474,21 @@ app.get("/kiosk/capture", (c) => {
 						console.error("getUserMedia failed:", err);
 						const denied = String(err && err.name) === "NotAllowedError";
 						setOverlay(
-							'<div class="text-xl font-semibold text-red-300">' +
+							'<div class="size-16 rounded-full border-2 border-red-400/30 bg-red-500/10 flex items-center justify-center text-2xl mb-4" aria-hidden="true">' +
+							(denied ? '\ud83d\udeab' : '\u26a0\ufe0f') + '</div>' +
+							'<div class="text-xl font-semibold">' +
 							(denied ? "Camera access blocked" : "Camera unavailable") +
-							'</div><p class="mt-2 text-sm text-white/60">' +
+							'</div><p class="mt-2 text-sm text-white/60 max-w-xs">' +
 							(denied
-								? "Open Settings → Safari → Camera and allow access, then reload."
-								: "Make sure no other app is using the camera, then reload.") +
-							'</p>'
+								? "We need camera access to take your selfie. Check your browser or device settings, then tap Retry."
+								: "Make sure no other app is using the camera, then tap Retry.") +
+							'</p>' +
+							'<button id="cap-retry-perms" class="mt-6 inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition">Retry permissions</button>' +
+							'<a href="/kiosk" class="mt-3 text-sm text-white/50 hover:text-white underline underline-offset-4">\u2190 Back to start</a>'
 						);
+						// Wire the retry button to re-call startCamera.
+						var retryPerms = document.getElementById("cap-retry-perms");
+						if (retryPerms) retryPerms.addEventListener("click", function () { startCamera(); });
 					}
 				}
 
@@ -2056,13 +2072,18 @@ app.get("/kiosk/status/:instanceId", (c) => {
 					workingSection.classList.add("hidden");
 					erroredSection.classList.remove("hidden");
 					erroredSection.classList.add("flex");
-					// Don't surface raw error text on the kiosk; show a friendly
-					// line but include a shortened detail for staff.
+					// Surface a human-friendly message — never raw stack traces.
+					// Specific errorMsg values set by the workflow (e.g. moderation
+					// rejection) get a tailored copy; everything else gets the
+					// generic fallback.
 					const raw = (state && state.error) ? String(state.error) : "";
-					const short = raw ? raw.slice(0, 120) : "";
-					errMsgEl.textContent = short
-						? "We couldn't finish your postcard. (" + short + ")"
-						: "We couldn't finish your postcard. Please try again.";
+					if (raw.indexOf("moderation rejected") !== -1) {
+						errMsgEl.textContent = "Your photo didn't pass our content check. Please try again with a different selfie.";
+					} else {
+						errMsgEl.textContent = "We couldn't finish your postcard. Please try again.";
+					}
+					// Log the raw error for staff — visible in browser console.
+					if (raw) console.warn("[kiosk-status] error detail:", raw);
 				}
 
 				function applyState(state) {
@@ -2251,7 +2272,7 @@ app.get("/kiosk/done", (c) => {
 							</span>
 							<span data-label="failed" class="hidden items-center gap-2">
 								<span aria-hidden="true">⚠️</span>
-								<span>Print failed — tap to retry</span>
+								<span>Print failed — please ask staff</span>
 							</span>
 						</button>
 
@@ -2303,6 +2324,35 @@ app.get("/kiosk/done", (c) => {
 				// since stashed value can be "(unset)" from an early DO seed.
 				const resolvedSid = sessionId
 					|| (payload && /^[a-f0-9-]{36}$/.test(payload.sessionId) ? payload.sessionId : null);
+
+				// Handle broken postcard image — R2 may be slow or the key
+				// may have expired. Show a friendly fallback instead of a
+				// broken <img>.
+				var postcardRetries = 0;
+				postcardEl.addEventListener("error", function () {
+					postcardRetries++;
+					if (postcardRetries <= 2) {
+						// Retry once after a brief delay — could be a transient R2 blip.
+						setTimeout(function () {
+							postcardEl.src = postcardEl.src.split("&_r=")[0] + "&_r=" + postcardRetries;
+						}, 1500);
+						return;
+					}
+					// After retries exhausted, show a placeholder.
+					postcardEl.classList.add("hidden");
+					var figure = postcardEl.closest("figure");
+					if (figure) {
+						figure.innerHTML =
+							'<div class="w-full aspect-[3/2] rounded-2xl border border-white/10 bg-white/[0.03] flex flex-col items-center justify-center text-center px-6">' +
+							'<div class="text-4xl mb-3" aria-hidden="true">\ud83d\uddbc\ufe0f</div>' +
+							'<p class="text-lg font-semibold text-white/80">Your postcard is being prepared</p>' +
+							'<p class="mt-2 text-sm text-white/50">The image isn\\'t loading right now.</p>' +
+							(resolvedSid
+								? '<a href="/p/' + resolvedSid + '" class="mt-4 text-sm text-cf-orange underline underline-offset-4 hover:text-white">View your digital copy \u2192</a>'
+								: '') +
+							'</div>';
+					}
+				});
 
 				if (payload && payload.postcardKey) {
 					postcardEl.src = "/api/run-img?key=" + encodeURIComponent(payload.postcardKey);
@@ -2363,8 +2413,13 @@ app.get("/kiosk/done", (c) => {
 							} else if (data.status === "failed") {
 								stopPrintPoll();
 								setPrintState("failed");
-								printBtn.disabled = false;
-								showPrintError(data.errorMsg || "The printer reported a failure.");
+								// Don't re-enable the button for user retry — staff should
+								// handle print failures via the admin dashboard's Retry print.
+								printBtn.disabled = true;
+								showPrintError(
+									"The printer couldn't complete your postcard. " +
+									"A staff member can reprint it from the admin dashboard."
+								);
 							}
 							// pending / printing → stay in "queued" state, keep polling
 						} catch (e) { /* network hiccup, retry silently */ }
@@ -4254,7 +4309,7 @@ app.get("/p/:id", async (c) => {
 
 	// ---- UUID: look up the session in D1 ----
 	const row = await c.env.DB.prepare(
-		`SELECT id, status, scene_name, postcard_key, completed_at, email
+		`SELECT id, status, scene_name, postcard_key, completed_at, email, error_msg
 		 FROM sessions
 		 WHERE id = ?`,
 	)
@@ -4266,6 +4321,7 @@ app.get("/p/:id", async (c) => {
 			postcard_key: string | null;
 			completed_at: number | null;
 			email: string | null;
+			error_msg: string | null;
 		}>();
 
 	// ---- Not found in D1 ----
@@ -4275,27 +4331,48 @@ app.get("/p/:id", async (c) => {
 
 	// ---- Still in progress (workflow hasn't reached `store` yet) ----
 	if (row.status !== "completed" || !row.postcard_key) {
-		const stateLabel =
-			row.status === "errored"
+		const isErrored = row.status === "errored";
+		const isModerationReject = isErrored && row.error_msg?.includes("moderation rejected");
+		const stateLabel = isModerationReject
+			? "Your photo didn\u2019t pass our content check"
+			: isErrored
 				? "Something went wrong with this postcard"
-				: "Your postcard is still being generated…";
-		const helpCopy =
-			row.status === "errored"
+				: "Your postcard is still being generated\u2026";
+		const helpCopy = isModerationReject
+			? "Head back to the booth and try again with a different selfie."
+			: isErrored
 				? "Head back to the booth and the staff will help you start a new one."
-				: "Hang tight — this page will refresh automatically. The whole pipeline usually finishes in under a minute.";
-		const shouldAutoRefresh = row.status !== "errored";
+				: "Hang tight \u2014 this page will refresh automatically. The whole pipeline usually finishes in under a minute.";
+
+		// Track retries via a query param so we can cap auto-refresh at
+		// ~60s (12 tries * 5s each) instead of polling forever. After the
+		// cap we switch to a manual "Refresh" button.
+		const retryParam = c.req.query("_retry");
+		const retryCount = retryParam ? parseInt(retryParam, 10) || 0 : 0;
+		const MAX_RETRIES = 12;
+		const shouldAutoRefresh = !isErrored && retryCount < MAX_RETRIES;
+		const nextRetryUrl = `/p/${id}?_retry=${retryCount + 1}`;
+
+		const timedOutCopy = retryCount >= MAX_RETRIES && !isErrored
+			? `<p class="text-white/50 text-sm mt-4">It's taking longer than usual. Your postcard may still be processing.</p>
+			   <a href="/p/${id}" class="mt-4 inline-flex items-center justify-center rounded-full bg-cf-orange px-6 py-3 text-sm font-bold text-black hover:bg-cf-orange-dark transition">Refresh</a>`
+			: "";
+
 		return c.html(
 			page(
-				"Your postcard — preparing…",
+				"Your postcard \u2014 preparing\u2026",
 				`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 					<div class="text-center max-w-xl">
-						<div class="mx-auto mb-6 size-16 rounded-full border-2 border-cf-orange/40 border-t-cf-orange animate-spin"></div>
+						${isErrored
+							? `<div class="mx-auto mb-6 size-16 rounded-full border-2 border-red-400/30 bg-red-500/10 flex items-center justify-center text-2xl" aria-hidden="true">\u26a0\ufe0f</div>`
+							: `<div class="mx-auto mb-6 size-16 rounded-full border-2 border-cf-orange/40 border-t-cf-orange animate-spin"></div>`}
 						<h1 class="text-3xl font-bold mb-3">${stateLabel}</h1>
 						<p class="text-white/60">${helpCopy}</p>
-						<p class="text-white/40 text-xs mt-6">session ${id.slice(0, 8)}…</p>
+						${timedOutCopy}
+						<p class="text-white/40 text-xs mt-6">session ${id.slice(0, 8)}\u2026</p>
 					</div>
 				</main>
-				${shouldAutoRefresh ? `<script>setTimeout(function(){ location.reload(); }, 5000);</script>` : ""}`,
+				${shouldAutoRefresh ? `<script>setTimeout(function(){ window.location.href = ${JSON.stringify(nextRetryUrl)}; }, 5000);</script>` : ""}`,
 			),
 		);
 	}

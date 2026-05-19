@@ -117,8 +117,19 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					);
 
 					if (!verdict.safe) {
+						// Mark session with a specific, user-facing error message
+						// instead of throwing raw. The kiosk status screen and
+						// /p/:id check for "moderation rejected" to show tailored
+						// copy. The raw reasons are logged for staff debugging.
+						const rawReasons = verdict.reasons.join("; ");
+						console.warn(
+							`[caricature-workflow] moderation rejected session=${sessionId} reasons=${rawReasons}`,
+						);
+						await this.markSession(sessionId, "errored", {
+							error: `moderation rejected selfie: ${rawReasons}`,
+						});
 						throw new Error(
-							`moderation rejected selfie: ${verdict.reasons.join("; ")}`,
+							`moderation rejected selfie: ${rawReasons}`,
 						);
 					}
 
@@ -310,6 +321,26 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				`[caricature-workflow] failed session=${sessionId} err=${message}`,
 			);
 			await this.markSession(sessionId, "errored", { error: message });
+
+			// Persist the error in D1 so /p/:id can display a user-facing
+			// error state even after the DO self-deletes. Uses ON CONFLICT
+			// so it works regardless of whether the session row already exists.
+			try {
+				await this.env.DB.prepare(
+					`INSERT INTO sessions (id, status, error_msg, scene_id)
+					 VALUES (?, 'errored', ?, ?)
+					 ON CONFLICT(id) DO UPDATE SET
+						status='errored',
+						error_msg=excluded.error_msg`,
+				)
+					.bind(sessionId, message, sceneId ?? null)
+					.run();
+			} catch (dbErr) {
+				console.warn(
+					`[caricature-workflow] failed to persist error to D1 session=${sessionId}: ${String(dbErr)}`,
+				);
+			}
+
 			// Re-throw so the workflow instance itself ends in `errored` state.
 			throw err;
 		}
