@@ -483,8 +483,19 @@ app.get("/admin", async (c) => {
 					>
 						♻️ Re-seed scenes
 					</button>
-					<span id="admin-toast" class="hidden text-xs text-emerald-300"></span>
 				</section>
+
+				<!-- Notyf toast library (loaded only on /admin) -->
+				<link rel="stylesheet" href="https://unpkg.com/notyf@3.10.0/notyf.min.css" />
+				<script src="https://unpkg.com/notyf@3.10.0/notyf.min.js"></script>
+				<style>
+					/* Theme Notyf to match the dashboard (orange success, red error). */
+					.notyf__toast { font-family: inherit; border-radius: 12px; }
+					.notyf__toast--success { background: #f6821f; }
+					.notyf__toast--success .notyf__icon { background: rgba(0,0,0,0.15); }
+					.notyf__toast--error { background: #ef4444; }
+					.notyf__message { font-weight: 500; }
+				</style>
 
 				<section id="admin-stats" class="mb-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
 					${renderAdminStatCards(stats)}
@@ -712,16 +723,17 @@ app.get("/admin", async (c) => {
 				}
 
 				// ----- Manual controls (10.4) -----
-				var toastEl = document.getElementById("admin-toast");
-				var toastTimer = null;
+				// Notyf is loaded from CDN above. We init once with bottom-right
+				// positioning, 4s duration, and dismiss-on-click for sticky errors.
+				var notyf = new Notyf({
+					duration: 4000,
+					position: { x: "right", y: "bottom" },
+					dismissible: true,
+					ripple: false,
+				});
 				function toast(msg, isError) {
-					toastEl.textContent = msg;
-					toastEl.classList.remove("hidden", "text-emerald-300", "text-red-300");
-					toastEl.classList.add(isError ? "text-red-300" : "text-emerald-300");
-					if (toastTimer) clearTimeout(toastTimer);
-					toastTimer = setTimeout(function () {
-						toastEl.classList.add("hidden");
-					}, 4000);
+					if (isError) notyf.error(msg);
+					else         notyf.success(msg);
 				}
 
 				async function callJson(url, opts) {
