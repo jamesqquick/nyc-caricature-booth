@@ -11,6 +11,7 @@ import {
 	qrPng,
 } from "./lib/postcard";
 import { sendPostcardEmail } from "./lib/email";
+import { trackEvent } from "./lib/analytics";
 import {
 	adminAuthMiddleware,
 	clearAdminCookie,
@@ -158,7 +159,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "11.3" });
+	return c.json({ status: "ok", step: "11.4" });
 });
 
 // ---------------------------------------------------------------------------
@@ -446,6 +447,225 @@ app.get("/admin/logout", (c) => {
 });
 
 /**
+ * Admin metrics page (Phase 11.4).
+ *
+ * Queries the Analytics Engine SQL API for event counts over the last 24h.
+ * Requires the AE_API_TOKEN secret (Account Analytics Read permission).
+ * If the token isn't set, shows a setup message instead of crashing.
+ *
+ * GET /admin/metrics
+ */
+app.get("/admin/metrics", async (c) => {
+	const apiToken = c.env.AE_API_TOKEN;
+	const accountId = "e9bc21da719562a3e45d77de7dd042de";
+
+	const noTokenHtml = `<main class="min-h-screen px-6 py-8 max-w-4xl mx-auto">
+		<header class="flex items-center justify-between mb-8">
+			<div>
+				<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50">
+					<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
+					<span>Booth admin</span>
+				</div>
+				<h1 class="mt-1 text-2xl font-bold">Event metrics</h1>
+			</div>
+			<div class="flex items-center gap-4 text-xs text-white/50">
+				<a href="/admin" class="text-cf-orange hover:text-white underline underline-offset-4">\u2190 Dashboard</a>
+				<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
+			</div>
+		</header>
+		<div class="rounded-xl border border-white/10 bg-white/[0.02] p-8 text-center">
+			<p class="text-white/60 mb-4">Analytics Engine querying requires an API token.</p>
+			<p class="text-xs text-white/40">Run <code class="text-cf-orange">npx wrangler secret put AE_API_TOKEN</code> with a token that has <em>Account Analytics Read</em> permission.</p>
+		</div>
+	</main>`;
+
+	if (!apiToken) {
+		return c.html(page("Metrics \u2014 Admin", noTokenHtml));
+	}
+
+	return c.html(
+		page(
+			"Metrics \u2014 Admin",
+			`<main class="min-h-screen px-6 py-8 max-w-4xl mx-auto">
+				<header class="flex items-center justify-between mb-8">
+					<div>
+						<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50">
+							<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
+							<span>Booth admin</span>
+						</div>
+						<h1 class="mt-1 text-2xl font-bold">Event metrics</h1>
+						<p class="text-xs text-white/40 mt-1">Last 24 hours \u2014 from Analytics Engine</p>
+					</div>
+					<div class="flex items-center gap-4 text-xs text-white/50">
+						<a href="/admin" class="text-cf-orange hover:text-white underline underline-offset-4">\u2190 Dashboard</a>
+						<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
+					</div>
+				</header>
+
+				<section id="metrics-cards" class="mb-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+					<div class="col-span-full text-center text-white/40 py-8">Loading metrics\u2026</div>
+				</section>
+
+				<section class="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+					<div class="px-5 py-4 border-b border-white/5">
+						<h2 class="text-sm font-semibold text-white/80">Events timeline (hourly)</h2>
+					</div>
+					<div id="metrics-timeline" class="p-5 min-h-[200px]">
+						<div class="text-center text-white/40 py-8">Loading\u2026</div>
+					</div>
+				</section>
+
+				<p id="metrics-updated" class="mt-4 text-center text-[11px] uppercase tracking-widest text-white/30"></p>
+			</main>
+			<script>
+			(function () {
+				var cardsEl = document.getElementById("metrics-cards");
+				var timelineEl = document.getElementById("metrics-timeline");
+				var updatedEl = document.getElementById("metrics-updated");
+
+				function escapeHtml(s) {
+					return String(s == null ? "" : s)
+						.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+				}
+
+				function renderCard(label, value, accent) {
+					return '<div class="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">'
+						+ '<div class="text-[10px] uppercase tracking-widest text-white/40">' + escapeHtml(label) + '</div>'
+						+ '<div class="mt-1 text-2xl font-bold ' + (accent || "text-white") + '">' + escapeHtml(String(value)) + '</div>'
+						+ '</div>';
+				}
+
+				function renderTimeline(rows) {
+					if (!rows || rows.length === 0) {
+						return '<div class="text-center text-white/40 py-8">No events in the last 24 hours.</div>';
+					}
+					// Simple text table
+					var html = '<div class="overflow-x-auto"><table class="w-full text-xs">';
+					html += '<thead class="text-left text-[10px] uppercase tracking-widest text-white/40"><tr>';
+					html += '<th class="px-3 py-2 font-medium">Hour</th>';
+					html += '<th class="px-3 py-2 font-medium text-right">Events</th>';
+					html += '<th class="px-3 py-2 font-medium">Bar</th>';
+					html += '</tr></thead><tbody class="divide-y divide-white/5">';
+					var maxCount = Math.max.apply(null, rows.map(function (r) { return r.count; }));
+					for (var i = 0; i < rows.length; i++) {
+						var r = rows[i];
+						var pct = maxCount > 0 ? Math.round((r.count / maxCount) * 100) : 0;
+						html += '<tr class="hover:bg-white/[0.02]">';
+						html += '<td class="px-3 py-2 text-white/60 whitespace-nowrap">' + escapeHtml(r.hour) + '</td>';
+						html += '<td class="px-3 py-2 text-right font-mono text-white/80">' + r.count + '</td>';
+						html += '<td class="px-3 py-2 w-full"><div class="h-4 rounded bg-cf-orange/30" style="width:' + pct + '%"></div></td>';
+						html += '</tr>';
+					}
+					html += '</tbody></table></div>';
+					return html;
+				}
+
+				async function loadMetrics() {
+					try {
+						var res = await fetch("/api/admin/metrics", { credentials: "same-origin" });
+						if (res.status === 401) { window.location.href = "/admin/login"; return; }
+						if (!res.ok) throw new Error("HTTP " + res.status);
+						var data = await res.json();
+
+						// Render cards
+						var counts = data.counts || {};
+						cardsEl.innerHTML = ""
+							+ renderCard("Sessions", counts["session.created"] || 0)
+							+ renderCard("Completed", counts["workflow.done"] || 0, "text-emerald-300")
+							+ renderCard("Errored", counts["workflow.errored"] || 0, "text-red-300")
+							+ renderCard("Prints requested", counts["print.requested"] || 0)
+							+ renderCard("Prints completed", counts["print.completed"] || 0, "text-emerald-300")
+							+ renderCard("Prints failed", counts["print.failed"] || 0, "text-red-300")
+							+ renderCard("Emails captured", counts["email.captured"] || 0, "text-cf-orange")
+							+ renderCard("Sessions deleted", counts["session.deleted"] || 0);
+
+						// Render timeline
+						timelineEl.innerHTML = renderTimeline(data.timeline || []);
+
+						updatedEl.textContent = "Updated " + new Date().toLocaleTimeString();
+					} catch (err) {
+						console.error("[metrics] load failed:", err);
+						cardsEl.innerHTML = '<div class="col-span-full text-center text-red-400 py-4">Failed to load metrics: ' + escapeHtml(err.message) + '</div>';
+					}
+				}
+
+				loadMetrics();
+			})();
+			</script>`,
+		),
+	);
+});
+
+/**
+ * Metrics JSON feed — queries Analytics Engine SQL API.
+ * GET /api/admin/metrics
+ *
+ * Returns { counts: { eventName: number }, timeline: [{ hour, count }] }
+ */
+app.get("/api/admin/metrics", async (c) => {
+	const apiToken = c.env.AE_API_TOKEN;
+	if (!apiToken) {
+		return c.json({ error: "AE_API_TOKEN not configured" }, 503);
+	}
+
+	const accountId = "e9bc21da719562a3e45d77de7dd042de";
+	const aeUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`;
+
+	async function aeQuery(sql: string) {
+		const res = await fetch(aeUrl, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${apiToken}` },
+			body: sql,
+		});
+		if (!res.ok) {
+			const text = await res.text();
+			console.error(`[metrics] AE query failed HTTP ${res.status}: ${text}`);
+			return null;
+		}
+		return (await res.json()) as { data: Record<string, unknown>[]; rows: number };
+	}
+
+	// Query 1: event counts for last 24h
+	const countsResult = await aeQuery(`
+		SELECT blob1 AS event_name, SUM(_sample_interval) AS count
+		FROM nyc_booth_events
+		WHERE timestamp > NOW() - INTERVAL '1' DAY
+		GROUP BY event_name
+		ORDER BY count DESC
+	`);
+
+	// Query 2: hourly timeline for last 24h
+	const timelineResult = await aeQuery(`
+		SELECT
+			toStartOfInterval(timestamp, INTERVAL '1' HOUR) AS hour,
+			SUM(_sample_interval) AS count
+		FROM nyc_booth_events
+		WHERE timestamp > NOW() - INTERVAL '1' DAY
+		GROUP BY hour
+		ORDER BY hour ASC
+	`);
+
+	const counts: Record<string, number> = {};
+	if (countsResult?.data) {
+		for (const row of countsResult.data) {
+			counts[String(row.event_name)] = Number(row.count) || 0;
+		}
+	}
+
+	const timeline: { hour: string; count: number }[] = [];
+	if (timelineResult?.data) {
+		for (const row of timelineResult.data) {
+			timeline.push({
+				hour: String(row.hour),
+				count: Number(row.count) || 0,
+			});
+		}
+	}
+
+	return c.json({ counts, timeline });
+});
+
+/**
  * Admin dashboard (Phase 10.2).
  *
  * Server-renders the initial sessions table; client polls /api/admin/sessions
@@ -475,6 +695,7 @@ app.get("/admin", async (c) => {
 							<span class="size-2 rounded-full bg-emerald-400 animate-pulse"></span>
 							<span>Auto-refresh · 10s</span>
 						</span>
+						<a href="/admin/metrics" class="text-cf-orange hover:text-white underline underline-offset-4">Metrics</a>
 						<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
 					</div>
 				</header>
@@ -1095,6 +1316,7 @@ app.delete("/api/admin/session/:id", async (c) => {
 	}
 
 	console.log(`[admin-delete] session=${id} deleted=[${deleted.join(", ")}]`);
+	trackEvent(c.env.ANALYTICS, "session.deleted", id);
 
 	return c.json({ ok: true, sessionId: id, deleted });
 });
@@ -1144,6 +1366,8 @@ app.post("/api/kiosk/selfie", async (c) => {
 			capturedAt: new Date().toISOString(),
 		},
 	});
+
+	trackEvent(c.env.ANALYTICS, "session.created", sessionId);
 
 	return c.json({
 		ok: true,
@@ -1322,6 +1546,8 @@ app.post("/api/kiosk/print", async (c) => {
 	console.log(
 		`[kiosk-print] session=${sessionId} jobId=${insertResult.id} queued sceneName=${sceneName}`,
 	);
+
+	trackEvent(c.env.ANALYTICS, "print.requested", sessionId, sceneName);
 
 	return c.json({
 		ok: true,
@@ -2964,6 +3190,18 @@ app.post("/api/print-agent/jobs/:id/ack", async (c) => {
 	if ((result.meta.changes ?? 0) === 0) {
 		return c.json({ error: "job not found or already acked" }, 404);
 	}
+
+	// Track print completion/failure. Fetch the session_id for the event.
+	const job = await c.env.DB.prepare("SELECT session_id FROM print_jobs WHERE id = ?")
+		.bind(jobId)
+		.first<{ session_id: string }>();
+	const sid = job?.session_id ?? "";
+	trackEvent(
+		c.env.ANALYTICS,
+		body.status === "printed" ? "print.completed" : "print.failed",
+		sid,
+		body.error ?? "",
+	);
 
 	return c.json({ ok: true, jobId, status: body.status });
 });
@@ -4852,6 +5090,7 @@ app.post("/api/p/:id/email", async (c) => {
 		.run();
 
 	console.log(`[email-optin] session=${id} email=${email.slice(0, 3)}***`);
+	trackEvent(c.env.ANALYTICS, "email.captured", id);
 
 	// Fire-and-forget: send the postcard email. Don't fail the opt-in if
 	// the email fails — the address is already persisted in D1 and can be

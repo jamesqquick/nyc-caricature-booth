@@ -55,6 +55,12 @@
 			"new_sqlite_classes": ["SessionDO"]
 		}
 	],
+	"analytics_engine_datasets": [
+		{
+			"binding": "ANALYTICS",
+			"dataset": "nyc_booth_events"
+		}
+	],
 	"send_email": [
 		{
 			"name": "EMAIL"

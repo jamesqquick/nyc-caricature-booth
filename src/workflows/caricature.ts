@@ -8,6 +8,7 @@ import { moderateImage, type ModerationVerdict } from "../lib/moderation";
 import { runFlux } from "../lib/flux";
 import { loadSceneById } from "../lib/scenes";
 import { buildPostcard } from "../lib/postcard";
+import { trackEvent } from "../lib/analytics";
 import type {
 	MarkStepPayload,
 	SessionStatus,
@@ -98,6 +99,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 		// (either `done` after store, or `errored` on any throw) and that
 		// the DO is cleaned up afterwards.
 		try {
+			trackEvent(this.env.ANALYTICS, "workflow.moderating", sessionId);
 			await this.markSession(sessionId, "moderating", { selfieKey });
 
 			const moderate: ModerateStepOutput = await step.do(
@@ -144,6 +146,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				return { hello, moderate };
 			}
 
+			trackEvent(this.env.ANALYTICS, "workflow.generating", sessionId, sceneId ?? "", moderate.elapsedMs);
 			await this.markSession(sessionId, "generating", {
 				elapsedMs: moderate.elapsedMs,
 			});
@@ -196,6 +199,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				},
 			);
 
+			trackEvent(this.env.ANALYTICS, "workflow.compositing", sessionId, generate.sceneName, generate.elapsedMs);
 			await this.markSession(sessionId, "compositing", {
 				sceneId: generate.sceneId,
 				sceneName: generate.sceneName,
@@ -308,6 +312,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 			// Terminal: push the full set of artifact keys into the DO so any
 			// final WS frame contains everything a client needs to render the
 			// done screen, even if it just connected.
+			trackEvent(this.env.ANALYTICS, "workflow.done", sessionId, generate.sceneName, composite.elapsedMs);
 			await this.markSession(sessionId, "done", {
 				postcardKey: composite.postcardKey,
 				postcardUrl: composite.postcardUrl,
@@ -320,6 +325,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 			console.error(
 				`[caricature-workflow] failed session=${sessionId} err=${message}`,
 			);
+			trackEvent(this.env.ANALYTICS, "workflow.errored", sessionId, message.slice(0, 200));
 			await this.markSession(sessionId, "errored", { error: message });
 
 			// Persist the error in D1 so /p/:id can display a user-facing
