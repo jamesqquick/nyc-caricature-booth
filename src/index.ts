@@ -300,18 +300,21 @@ function renderAdminTableBody(rows: AdminSessionRow[]): string {
 }
 
 /**
- * Per-row action buttons. Visible buttons depend on the row state:
- *   - "Retry print"  → completed + (no print job OR last print failed)
- *   - "Resend email" → hasEmail (regardless of send success — we can re-send)
+ * Per-row action buttons. Both buttons appear for any completed session with
+ * a postcard; the underlying endpoints are idempotent and will toast the
+ * appropriate "already queued" / "no email on file" response.
+ *
+ *   - "Retry print"  → completed (POST /api/kiosk/print is idempotent: returns
+ *                      `alreadyQueued` for pending/printing/printed, only
+ *                      actually inserts a new row for failed/missing jobs)
+ *   - "Resend email" → completed + hasEmail
+ *
  * Each button carries data-action + data-session for the JS click delegator.
  */
 function renderAdminRowActions(r: AdminSessionRow): string {
 	const buttons: string[] = [];
 	const isCompleted = r.status === "completed" && !!r.postcardKey;
-	const canPrint =
-		isCompleted &&
-		(r.printStatus == null || r.printStatus === "failed");
-	if (canPrint) {
+	if (isCompleted) {
 		buttons.push(
 			`<button type="button"
 				data-action="retry-print"
@@ -489,11 +492,22 @@ app.get("/admin", async (c) => {
 				<link rel="stylesheet" href="https://unpkg.com/notyf@3.10.0/notyf.min.css" />
 				<script src="https://unpkg.com/notyf@3.10.0/notyf.min.js"></script>
 				<style>
-					/* Theme Notyf to match the dashboard (orange success, red error). */
+					/* Theme Notyf to match the dashboard (orange success, red error).
+					   The library wraps its checkmark/x glyph in a circular .notyf__icon
+					   tile with a default gray background — we make that tile transparent
+					   so only the glyph shows on top of the toast color. */
 					.notyf__toast { font-family: inherit; border-radius: 12px; }
 					.notyf__toast--success { background: #f6821f; }
-					.notyf__toast--success .notyf__icon { background: rgba(0,0,0,0.15); }
-					.notyf__toast--error { background: #ef4444; }
+					.notyf__toast--error   { background: #ef4444; }
+					.notyf__icon { background: transparent !important; }
+					.notyf__icon-success, .notyf__icon-error {
+						background: transparent !important;
+						border-color: rgba(255,255,255,0.9) !important;
+					}
+					.notyf__icon-success::after, .notyf__icon-success::before,
+					.notyf__icon-error::after,   .notyf__icon-error::before {
+						background: #ffffff !important;
+					}
 					.notyf__message { font-weight: 500; }
 				</style>
 
@@ -604,8 +618,7 @@ app.get("/admin", async (c) => {
 				function renderActions(r) {
 					var buttons = [];
 					var isCompleted = r.status === "completed" && !!r.postcardKey;
-					var canPrint = isCompleted && (r.printStatus == null || r.printStatus === "failed");
-					if (canPrint) {
+					if (isCompleted) {
 						buttons.push(
 							'<button type="button" data-action="retry-print" data-session="' + escapeHtml(r.sessionId) + '"'
 							+ ' class="inline-flex items-center rounded-full border border-cf-orange/40 bg-cf-orange/10 px-3 py-1 text-xs text-cf-orange hover:bg-cf-orange/20 hover:border-cf-orange/60 disabled:opacity-50 disabled:cursor-not-allowed transition">🖨️ Retry print</button>'
