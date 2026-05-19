@@ -211,12 +211,13 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							`caricature has no body: ${generate.caricatureKey}`,
 						);
 
-					const origin = publicOrigin?.replace(/\/$/, "") ?? "";
-					const postcardUrl = `${origin}/p/${sessionId}`;
+				const origin = publicOrigin?.replace(/\/$/, "") ?? "";
+				const postcardUrl = `${origin}/p/${sessionId}`;
 
-					const response = await buildPostcard(this.env, caricature.body, {
-						qrUrl: postcardUrl,
-					});
+				// QR removed from printed postcard (step 6.6). Users scan the
+				// QR on the kiosk done screen instead; the printed postcard is
+				// just caricature + watermark.
+				const response = await buildPostcard(this.env, caricature.body);
 					if (!response.ok)
 						throw new Error(`postcard build failed: HTTP ${response.status}`);
 					const postcardBytes = new Uint8Array(await response.arrayBuffer());
