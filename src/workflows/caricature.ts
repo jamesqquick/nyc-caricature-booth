@@ -254,26 +254,27 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					timeout: "30 seconds",
 				},
 				async () => {
-					const origin = publicOrigin?.replace(/\/$/, "") ?? "";
-					const postcardUrl = `${origin}/p/${sessionId}`;
-
-					// Batch: write session + print job in one D1 round trip
-					const [sessionResult] = await this.env.DB.batch([
-						this.env.DB.prepare(
-							`INSERT INTO sessions
-								(id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
-							 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
-							 ON CONFLICT(id) DO UPDATE SET
-								status='completed',
-								scene_id=excluded.scene_id,
-								scene_name=excluded.scene_name,
-								selfie_key=excluded.selfie_key,
-								caricature_key=excluded.caricature_key,
-								postcard_key=excluded.postcard_key,
-								workflow_instance_id=excluded.workflow_instance_id,
-								completed_at=excluded.completed_at,
-								error_msg=NULL`,
-						).bind(
+					// Print job is NOT enqueued here anymore — printing is now
+					// user-initiated from the /kiosk/done screen via POST
+					// /api/kiosk/print. Workflow's only D1 write is the session
+					// upsert. Attendees who only want the digital copy never
+					// produce a print_jobs row.
+					const sessionResult = await this.env.DB.prepare(
+						`INSERT INTO sessions
+							(id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
+						 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
+						 ON CONFLICT(id) DO UPDATE SET
+							status='completed',
+							scene_id=excluded.scene_id,
+							scene_name=excluded.scene_name,
+							selfie_key=excluded.selfie_key,
+							caricature_key=excluded.caricature_key,
+							postcard_key=excluded.postcard_key,
+							workflow_instance_id=excluded.workflow_instance_id,
+							completed_at=excluded.completed_at,
+							error_msg=NULL`,
+					)
+						.bind(
 							sessionId,
 							generate.sceneId,
 							generate.sceneName,
@@ -281,21 +282,12 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							generate.caricatureKey,
 							composite.postcardKey,
 							instanceId,
-						),
-						this.env.DB.prepare(
-							`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
-							 VALUES (?, ?, ?, ?)`,
-						).bind(
-							sessionId,
-							composite.postcardKey,
-							postcardUrl,
-							generate.sceneName,
-						),
-					]);
+						)
+						.run();
 
-					const rowsWritten = (sessionResult.meta.changes ?? 0);
+					const rowsWritten = sessionResult.meta.changes ?? 0;
 					console.log(
-						`[caricature-workflow] store session=${sessionId} rowsWritten=${rowsWritten} printJob=queued`,
+						`[caricature-workflow] store session=${sessionId} rowsWritten=${rowsWritten} printJob=deferred`,
 					);
 
 					return { sessionId, rowsWritten };

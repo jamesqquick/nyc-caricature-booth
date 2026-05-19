@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 
 import { moderateImage } from "./lib/moderation";
 import { runFlux } from "./lib/flux";
@@ -272,6 +272,99 @@ app.post("/api/kiosk/start", async (c) => {
 		instanceId: instance.id,
 		sessionId,
 		statusUrl,
+	});
+});
+
+/**
+ * Enqueues a print job for a completed session. Called from /kiosk/done when
+ * the attendee taps "Print my postcard". Printing is opt-in — the workflow
+ * no longer writes to print_jobs automatically.
+ *
+ * Idempotent: if a print_jobs row already exists for this session with a
+ * non-terminal-failure status (pending/printing/printed), we return
+ * `alreadyQueued: true` without inserting. Re-queuing IS allowed after a
+ * `failed` job so attendees can retry.
+ *
+ * POST /api/kiosk/print  body: { sessionId }
+ */
+app.post("/api/kiosk/print", async (c) => {
+	let body: { sessionId?: unknown };
+	try {
+		body = await c.req.json();
+	} catch (err) {
+		return c.json({ error: "expected JSON body { sessionId }", details: String(err) }, 400);
+	}
+
+	const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+	if (!UUID_RE.test(sessionId)) {
+		return c.json({ error: "invalid sessionId" }, 400);
+	}
+
+	// The session must be completed and have a postcard before we can print.
+	const session = await c.env.DB.prepare(
+		"SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
+	)
+		.bind(sessionId)
+		.first<{ id: string; status: string | null; postcard_key: string | null; scene_name: string | null }>();
+
+	if (!session) {
+		return c.json({ error: "session not found" }, 404);
+	}
+	if (session.status !== "completed" || !session.postcard_key) {
+		return c.json(
+			{ error: "session is not ready to print", status: session.status },
+			409,
+		);
+	}
+
+	// Idempotency: if there's an active or completed print job already, don't
+	// create another. Only `failed` jobs are considered re-queuable.
+	const existing = await c.env.DB.prepare(
+		`SELECT id, status FROM print_jobs
+		 WHERE session_id = ? AND status IN ('pending', 'printing', 'printed')
+		 ORDER BY created_at DESC
+		 LIMIT 1`,
+	)
+		.bind(sessionId)
+		.first<{ id: string; status: string }>();
+
+	if (existing) {
+		console.log(
+			`[kiosk-print] session=${sessionId} already queued jobId=${existing.id} status=${existing.status}`,
+		);
+		return c.json({
+			ok: true,
+			alreadyQueued: true,
+			jobId: existing.id,
+			status: existing.status,
+		});
+	}
+
+	const origin = new URL(c.req.url).origin;
+	const postcardUrl = `${origin}/p/${sessionId}`;
+	const sceneName = session.scene_name ?? "NYC scene";
+
+	const insertResult = await c.env.DB.prepare(
+		`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
+		 VALUES (?, ?, ?, ?)
+		 RETURNING id`,
+	)
+		.bind(sessionId, session.postcard_key, postcardUrl, sceneName)
+		.first<{ id: string }>();
+
+	if (!insertResult) {
+		return c.json({ error: "failed to enqueue print job" }, 500);
+	}
+
+	console.log(
+		`[kiosk-print] session=${sessionId} jobId=${insertResult.id} queued sceneName=${sceneName}`,
+	);
+
+	return c.json({
+		ok: true,
+		alreadyQueued: false,
+		jobId: insertResult.id,
+		status: "pending",
 	});
 });
 
@@ -1246,31 +1339,47 @@ app.get("/kiosk/done", (c) => {
 						<figcaption id="done-meta" class="mt-1.5 text-center text-xs text-white/40"></figcaption>
 					</figure>
 
-					<!-- Pick-up banner -->
-					<div class="flex items-center gap-3 rounded-2xl border border-cf-orange/30 bg-cf-orange/10 px-5 py-3 text-sm text-cf-orange font-medium max-w-lg w-full justify-center">
-						<span aria-hidden="true">🖨️</span>
-						Pick up your print at the counter
-					</div>
-
 					<!--
-						Countdown block — sits below the postcard, clearly visible.
-						Big number + explanatory copy + restart button in a row.
+						Action row: Print is the primary CTA (opt-in), Start over
+						is the secondary outline button. After Print is tapped the
+						primary swaps to a locked confirmation banner.
 					-->
-					<div class="flex flex-col sm:flex-row items-center gap-3 sm:gap-6 max-w-lg w-full">
-						<div class="flex flex-col items-center sm:items-start">
-							<div class="flex items-baseline gap-1.5">
-								<span id="done-countdown-secs" class="text-5xl sm:text-6xl font-black tabular-nums text-white leading-none">60</span>
-								<span class="text-base text-white/50 font-medium">s</span>
-							</div>
-							<p class="text-xs text-white/50 mt-1 text-center sm:text-left">
-								until idle &middot; tap anywhere to reset
-							</p>
-						</div>
+					<div class="flex flex-col sm:flex-row items-center gap-3 max-w-lg w-full">
+						<button id="done-print"
+							class="flex-1 w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full bg-cf-orange px-8 py-4 text-base font-bold text-black shadow-[0_0_30px_rgba(246,130,31,0.4)] hover:bg-cf-orange-dark active:scale-[0.98] transition whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-100">
+							<span data-label="idle" class="inline-flex items-center gap-2">
+								<span aria-hidden="true">🖨️</span>
+								<span>Print my postcard</span>
+							</span>
+							<span data-label="loading" class="hidden items-center gap-2">
+								<svg class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+									<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.3" stroke-width="3" />
+									<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+								</svg>
+								<span>Sending to printer…</span>
+							</span>
+							<span data-label="done" class="hidden items-center gap-2">
+								<span aria-hidden="true">✓</span>
+								<span>Printing — pick up at the counter</span>
+							</span>
+						</button>
 
 						<button id="done-restart"
-							class="sm:ml-auto inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black shadow-[0_0_30px_rgba(246,130,31,0.4)] hover:bg-cf-orange-dark active:scale-[0.98] transition whitespace-nowrap">
+							class="w-full sm:w-auto inline-flex items-center justify-center rounded-full border border-white/25 bg-white/5 px-6 py-4 text-base font-semibold text-white/90 hover:bg-white/10 active:scale-[0.98] transition whitespace-nowrap">
 							Start over
 						</button>
+					</div>
+
+					<!-- Error toast for print failures -->
+					<p id="done-print-error" class="hidden text-sm text-red-400 text-center max-w-lg"></p>
+
+					<!--
+						Countdown block — sits below the actions, smaller now that
+						actions are the visual anchor. Big number + explanatory copy.
+					-->
+					<div class="flex items-baseline gap-2 text-white/50">
+						<span id="done-countdown-secs" class="text-2xl font-bold tabular-nums text-white/80 leading-none">60</span>
+						<span class="text-sm">s until idle &middot; tap anywhere to reset</span>
 					</div>
 				</section>
 			</main>
@@ -1280,6 +1389,8 @@ app.get("/kiosk/done", (c) => {
 				const metaEl     = document.getElementById("done-meta");
 				const secsEl     = document.getElementById("done-countdown-secs");
 				const restartBtn = document.getElementById("done-restart");
+				const printBtn   = document.getElementById("done-print");
+				const printError = document.getElementById("done-print-error");
 				const root       = document.getElementById("done-root");
 				// sessionId is injected server-side from ?session= — always a
 				// confirmed UUID (or null). Prefer this over state.sessionId from
@@ -1313,6 +1424,64 @@ app.get("/kiosk/done", (c) => {
 					postcardEl.classList.add("hidden");
 					metaEl.textContent = "No postcard found — please start over.";
 				}
+
+				// ---- Print button ----
+				// Three visual states driven by [data-label] children: idle,
+				// loading, done. The button locks once we've enqueued the job;
+				// a failure unlocks it so the user can retry.
+				function setPrintState(state) {
+					const labels = printBtn.querySelectorAll("[data-label]");
+					labels.forEach(function (el) {
+						const match = el.getAttribute("data-label") === state;
+						el.classList.toggle("hidden", !match);
+						el.classList.toggle("inline-flex", match);
+					});
+				}
+
+				function showPrintError(msg) {
+					printError.textContent = msg;
+					printError.classList.remove("hidden");
+				}
+
+				function clearPrintError() {
+					printError.classList.add("hidden");
+					printError.textContent = "";
+				}
+
+				if (!resolvedSid) {
+					// Without a session id we can't print — disable the button
+					// up front instead of letting the user tap and fail.
+					printBtn.disabled = true;
+					printBtn.classList.add("opacity-50");
+				}
+
+				printBtn.addEventListener("click", async function () {
+					if (printBtn.disabled || !resolvedSid) return;
+					clearPrintError();
+					printBtn.disabled = true;
+					setPrintState("loading");
+
+					try {
+						const res = await fetch("/api/kiosk/print", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ sessionId: resolvedSid }),
+						});
+						const data = await res.json().catch(function () { return {}; });
+						if (!res.ok || !data.ok) {
+							throw new Error(data.error || "request failed (" + res.status + ")");
+						}
+						// Success — lock into done state. Don't re-enable.
+						setPrintState("done");
+						printBtn.classList.remove("hover:bg-cf-orange-dark");
+						printBtn.classList.add("cursor-default");
+					} catch (err) {
+						console.warn("print enqueue failed:", err);
+						setPrintState("idle");
+						printBtn.disabled = false;
+						showPrintError("Couldn't queue the print. Tap again, or ask a staff member.");
+					}
+				});
 
 				// ---- Countdown ----
 				let remaining = IDLE_SECS;
@@ -3053,16 +3222,57 @@ app.post("/api/test-postcard", async (c) => {
 });
 
 /**
+ * Renders the branded "postcard not found" page with a 404 status. Shared
+ * by every /p/* path that can't resolve a real postcard — unknown UUIDs,
+ * malformed IDs, missing path segments, etc.
+ *
+ * The `id` is rendered as a short hex preview but not echoed verbatim into
+ * the HTML beyond `.slice(0, 8)` so we don't reflect arbitrary input.
+ */
+function brandedPostcardNotFound(c: Context<{ Bindings: Env }>, id?: string) {
+	const idPreview = id ? id.slice(0, 8) : "";
+	const previewHtml = idPreview
+		? `<p class="text-white/60 mb-2">No session matches <code class="text-cf-orange">${idPreview}…</code></p>`
+		: `<p class="text-white/60 mb-2">No postcard at this address.</p>`;
+
+	c.status(404);
+	return c.html(
+		page(
+			"Postcard not found",
+			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
+				<div class="text-center max-w-xl">
+					<div class="text-6xl mb-6">🗽</div>
+					<h1 class="text-3xl font-bold mb-3">We couldn't find that postcard</h1>
+					${previewHtml}
+					<p class="text-white/50 text-sm">
+						If you just scanned a QR from a printed postcard, double-check the link.
+						Sessions older than the event window may have been cleaned up.
+					</p>
+					<a href="/" class="mt-10 inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+						See what we built
+					</a>
+				</div>
+			</main>`,
+		),
+	);
+}
+
+/**
  * Digital-pickup landing page for a postcard.
  * GET /p/:id
  *
- * Two flavours of `id`:
+ * Three flavours of `id`:
  *   1. UUID — a real workflow session. We query D1 for scene_name +
  *      postcard_key + completed_at + status and render a full landing
  *      with the postcard, metadata, "Download" and "Share" actions, and
  *      a placeholder slot for the Phase 9.2 email opt-in form.
  *   2. Short slug — a legacy `/test-postcard` dev postcard. Doesn't have
  *      a D1 row; we render a minimal "you scanned a test postcard" page.
+ *   3. Anything else — render the branded 404 instead of falling through
+ *      to Hono's default. Truncated UUIDs, typos and copy-paste mistakes
+ *      all land here. A separate `/p/*` fallback (registered below) catches
+ *      paths that don't match this single-segment route at all (`/p`,
+ *      `/p/a/b`, etc.).
  *
  * Public — UUIDs are unguessable enough for an event activation, and
  * /api/run-img is already public for `runs/` keys. No auth gate.
@@ -3071,10 +3281,14 @@ app.get("/p/:id", async (c) => {
 	const id = c.req.param("id");
 	const isShortSlug = /^[a-z2-9]{6,16}$/.test(id);
 	const isUuid = UUID_RE.test(id);
-	if (!isShortSlug && !isUuid) return c.notFound();
 
 	const origin = new URL(c.req.url).origin;
 	const pickupUrl = `${origin}/p/${id}`;
+
+	// ---- Malformed id — branded 404 ----
+	if (!isShortSlug && !isUuid) {
+		return brandedPostcardNotFound(c, id);
+	}
 
 	// ---- Legacy short slug (test postcards from /test-postcard) ----
 	if (isShortSlug) {
@@ -3116,26 +3330,7 @@ app.get("/p/:id", async (c) => {
 
 	// ---- Not found in D1 ----
 	if (!row) {
-		c.status(404);
-		return c.html(
-			page(
-				"Postcard not found",
-				`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
-					<div class="text-center max-w-xl">
-						<div class="text-6xl mb-6">🗽</div>
-						<h1 class="text-3xl font-bold mb-3">We couldn't find that postcard</h1>
-						<p class="text-white/60 mb-2">No session matches <code class="text-cf-orange">${id.slice(0, 8)}…</code></p>
-						<p class="text-white/50 text-sm">
-							If you just scanned a QR from a printed postcard, double-check the link.
-							Sessions older than the event window may have been cleaned up.
-						</p>
-						<a href="/" class="mt-10 inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
-							See what we built
-						</a>
-					</div>
-				</main>`,
-			),
-		);
+		return brandedPostcardNotFound(c, id);
 	}
 
 	// ---- Still in progress (workflow hasn't reached `store` yet) ----
@@ -3284,6 +3479,18 @@ app.get("/p/:id", async (c) => {
 		),
 	);
 });
+
+/**
+ * Branded 404 fallbacks for paths that don't match `/p/:id` exactly:
+ *   - `/p`           — no postcard id at all
+ *   - `/p/`          — same, with trailing slash
+ *   - `/p/foo/bar`   — extra path segments after the id
+ * Without these, Hono falls back to its default text/plain 404, which
+ * defeats the whole point of friendly error pages here. The branded 404
+ * is harmless on any path under /p/ — it doesn't echo arbitrary input.
+ */
+app.get("/p", (c) => brandedPostcardNotFound(c));
+app.get("/p/:id/*", (c) => brandedPostcardNotFound(c, c.req.param("id")));
 
 /**
  * Test endpoint: generate an image with Workers AI (FLUX.2 klein 4B).
