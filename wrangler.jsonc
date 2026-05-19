@@ -55,6 +55,14 @@
 			"new_sqlite_classes": ["SessionDO"]
 		}
 	],
+	"queues": {
+		"producers": [
+			{
+				"queue": "nyc-booth-print-queue",
+				"binding": "PRINT_QUEUE"
+			}
+		]
+	},
 	"observability": {
 		"enabled": true
 	}
