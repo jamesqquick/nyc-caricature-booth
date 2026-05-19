@@ -369,6 +369,33 @@ app.post("/api/kiosk/print", async (c) => {
 });
 
 /**
+ * Returns the current status of a print job. Polled by /kiosk/done after
+ * the attendee taps "Print my postcard" so the UI can reflect whether the
+ * physical printer has actually finished.
+ *
+ * GET /api/kiosk/print/:jobId/status
+ * → { status: "pending" | "printing" | "printed" | "failed", printedAt?, errorMsg? }
+ */
+app.get("/api/kiosk/print/:jobId/status", async (c) => {
+	const jobId = c.req.param("jobId");
+	if (!jobId) return c.json({ error: "missing jobId" }, 400);
+
+	const row = await c.env.DB.prepare(
+		"SELECT status, printed_at, error_msg FROM print_jobs WHERE id = ?",
+	)
+		.bind(jobId)
+		.first<{ status: string; printed_at: number | null; error_msg: string | null }>();
+
+	if (!row) return c.json({ error: "job not found" }, 404);
+
+	return c.json({
+		status: row.status,
+		...(row.printed_at ? { printedAt: row.printed_at } : {}),
+		...(row.error_msg ? { errorMsg: row.error_msg } : {}),
+	});
+});
+
+/**
  * Generates a QR code PNG for the given URL and returns it as image/png.
  * Used by /kiosk/done to render a scannable code for the digital pickup
  * link without shipping a QR library to the client.
@@ -1358,9 +1385,20 @@ app.get("/kiosk/done", (c) => {
 								</svg>
 								<span>Sending to printer…</span>
 							</span>
-							<span data-label="done" class="hidden items-center gap-2">
+							<span data-label="queued" class="hidden items-center gap-2">
+								<svg class="size-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+									<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.3" stroke-width="3" />
+									<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+								</svg>
+								<span>Queued — waiting for printer…</span>
+							</span>
+							<span data-label="printed" class="hidden items-center gap-2">
 								<span aria-hidden="true">✓</span>
-								<span>Printing — pick up at the counter</span>
+								<span>Printed — pick up at the counter!</span>
+							</span>
+							<span data-label="failed" class="hidden items-center gap-2">
+								<span aria-hidden="true">⚠️</span>
+								<span>Print failed — tap to retry</span>
 							</span>
 						</button>
 
@@ -1426,13 +1464,16 @@ app.get("/kiosk/done", (c) => {
 				}
 
 				// ---- Print button ----
-				// Three visual states driven by [data-label] children: idle,
-				// loading, done. The button locks once we've enqueued the job;
-				// a failure unlocks it so the user can retry.
+				// Five visual states driven by [data-label] children: idle,
+				// loading, queued, printed, failed. After enqueue we poll the
+				// job status every 2s so the button reflects the physical
+				// printer's actual state.
+				var printPollTimer = null;
+
 				function setPrintState(state) {
-					const labels = printBtn.querySelectorAll("[data-label]");
+					var labels = printBtn.querySelectorAll("[data-label]");
 					labels.forEach(function (el) {
-						const match = el.getAttribute("data-label") === state;
+						var match = el.getAttribute("data-label") === state;
 						el.classList.toggle("hidden", !match);
 						el.classList.toggle("inline-flex", match);
 					});
@@ -1446,6 +1487,35 @@ app.get("/kiosk/done", (c) => {
 				function clearPrintError() {
 					printError.classList.add("hidden");
 					printError.textContent = "";
+				}
+
+				function stopPrintPoll() {
+					if (printPollTimer) { clearInterval(printPollTimer); printPollTimer = null; }
+				}
+
+				function startPrintPoll(jobId) {
+					// Poll every 2s. Stop on terminal state or when the
+					// countdown navigates away (clearInterval in returnToIdle).
+					stopPrintPoll();
+					printPollTimer = setInterval(async function () {
+						try {
+							var res = await fetch("/api/kiosk/print/" + encodeURIComponent(jobId) + "/status");
+							if (!res.ok) return; // silently retry on next interval
+							var data = await res.json().catch(function () { return {}; });
+							if (data.status === "printed") {
+								stopPrintPoll();
+								setPrintState("printed");
+								printBtn.classList.remove("hover:bg-cf-orange-dark");
+								printBtn.classList.add("cursor-default");
+							} else if (data.status === "failed") {
+								stopPrintPoll();
+								setPrintState("failed");
+								printBtn.disabled = false;
+								showPrintError(data.errorMsg || "The printer reported a failure.");
+							}
+							// pending / printing → stay in "queued" state, keep polling
+						} catch (e) { /* network hiccup, retry silently */ }
+					}, 2000);
 				}
 
 				if (!resolvedSid) {
@@ -1462,19 +1532,34 @@ app.get("/kiosk/done", (c) => {
 					setPrintState("loading");
 
 					try {
-						const res = await fetch("/api/kiosk/print", {
+						// Minimum 800ms loading state so the user sees feedback
+						// even when the POST returns near-instantly.
+						var minDelay = new Promise(function (r) { setTimeout(r, 800); });
+						var request = fetch("/api/kiosk/print", {
 							method: "POST",
 							headers: { "content-type": "application/json" },
 							body: JSON.stringify({ sessionId: resolvedSid }),
 						});
-						const data = await res.json().catch(function () { return {}; });
+
+						var results = await Promise.all([request, minDelay]);
+						var res = results[0];
+						var data = await res.json().catch(function () { return {}; });
 						if (!res.ok || !data.ok) {
 							throw new Error(data.error || "request failed (" + res.status + ")");
 						}
-						// Success — lock into done state. Don't re-enable.
-						setPrintState("done");
-						printBtn.classList.remove("hover:bg-cf-orange-dark");
-						printBtn.classList.add("cursor-default");
+
+						// If already printed (e.g. from a previous session), skip
+						// straight to the terminal state.
+						if (data.status === "printed") {
+							setPrintState("printed");
+							printBtn.classList.remove("hover:bg-cf-orange-dark");
+							printBtn.classList.add("cursor-default");
+							return;
+						}
+
+						// Enqueued — show "queued" state and start polling.
+						setPrintState("queued");
+						if (data.jobId) startPrintPoll(data.jobId);
 					} catch (err) {
 						console.warn("print enqueue failed:", err);
 						setPrintState("idle");
@@ -1492,6 +1577,7 @@ app.get("/kiosk/done", (c) => {
 				}
 
 				function returnToIdle() {
+					stopPrintPoll();
 					try { sessionStorage.removeItem("kiosk:selfie"); } catch (e) {}
 					try { sessionStorage.removeItem("kiosk:done"); } catch (e) {}
 					window.location.href = "/kiosk";
