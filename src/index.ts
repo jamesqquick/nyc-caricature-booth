@@ -11,6 +11,12 @@ import {
 	qrPng,
 } from "./lib/postcard";
 import { sendPostcardEmail } from "./lib/email";
+import {
+	adminAuthMiddleware,
+	clearAdminCookie,
+	setAdminCookie,
+	signAdminToken,
+} from "./lib/admin-auth";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 export { SessionDO } from "./session/session";
@@ -22,6 +28,15 @@ const app = new Hono<{ Bindings: Env }>();
 // step can share it.
 
 // Moderation helpers are now in src/lib/moderation.ts (shared with workflows).
+
+/** Escape a string for safe interpolation inside an HTML attribute value. */
+const escapeAttr = (s: string): string =>
+	s
+		.replace(/&/g, "&amp;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
 
 const page = (title: string, body: string) => `<!doctype html>
 <html lang="en">
@@ -134,7 +149,142 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "9.4" });
+	return c.json({ status: "ok", step: "10.1" });
+});
+
+// ---------------------------------------------------------------------------
+// Admin auth (Phase 10.1)
+//
+// Cookie-based auth for the /admin/* dashboard. The middleware runs on every
+// /admin/* and /api/admin/* route. /admin/login (GET + POST) and /admin/logout
+// are exempt inside the middleware itself.
+// ---------------------------------------------------------------------------
+
+app.use("/admin/*", adminAuthMiddleware());
+app.use("/api/admin/*", adminAuthMiddleware());
+
+/**
+ * Login form. Plain HTML, single password field. Honors a `?next=` redirect
+ * target (only relative URLs, to avoid open-redirects).
+ */
+app.get("/admin/login", (c) => {
+	const next = c.req.query("next") ?? "/admin";
+	const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/admin";
+	const errMsg = c.req.query("err") === "1" ? "Wrong password." : "";
+
+	return c.html(
+		page(
+			"Admin · I 🧡 NY booth",
+			`<main class="min-h-screen flex flex-col items-center justify-center px-6">
+				<div class="w-full max-w-sm">
+					<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50 justify-center">
+						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
+						<span>Booth admin</span>
+					</div>
+					<h1 class="mt-3 text-3xl font-bold text-center">Sign in</h1>
+					<p class="mt-1 text-sm text-white/60 text-center">Restricted — staff only.</p>
+
+					<form method="POST" action="/admin/login" class="mt-8 flex flex-col gap-3">
+						<input type="hidden" name="next" value="${escapeAttr(safeNext)}" />
+						<label class="text-xs uppercase tracking-widest text-white/50" for="pw">Password</label>
+						<input
+							id="pw"
+							name="password"
+							type="password"
+							required
+							autofocus
+							autocomplete="current-password"
+							class="rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-base text-white outline-none focus:border-cf-orange/60 focus:bg-white/10"
+						/>
+						${errMsg ? `<p class="text-sm text-red-400">${errMsg}</p>` : ""}
+						<button
+							type="submit"
+							class="mt-2 rounded-full bg-cf-orange px-6 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition"
+						>
+							Sign in
+						</button>
+					</form>
+					<p class="mt-8 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
+						<a href="/" class="hover:text-white/60">← Back to site</a>
+					</p>
+				</div>
+			</main>`,
+		),
+	);
+});
+
+/**
+ * Login submit. Accepts either form-urlencoded or JSON {password, next?}.
+ * On success: sets the cookie and 303-redirects to `next` (or /admin).
+ * On failure: redirects back to /admin/login?err=1&next=<next>.
+ */
+app.post("/admin/login", async (c) => {
+	const password = c.env.ADMIN_PASSWORD;
+	if (!password) {
+		return c.text("ADMIN_PASSWORD not configured", 500);
+	}
+
+	let submitted = "";
+	let next = "/admin";
+	const ct = c.req.header("content-type") ?? "";
+
+	if (ct.includes("application/json")) {
+		try {
+			const body = (await c.req.json()) as { password?: unknown; next?: unknown };
+			submitted = typeof body.password === "string" ? body.password : "";
+			if (typeof body.next === "string") next = body.next;
+		} catch {
+			// fall through with empty submitted → will fail
+		}
+	} else {
+		const form = await c.req.parseBody();
+		submitted = typeof form.password === "string" ? form.password : "";
+		if (typeof form.next === "string") next = form.next;
+	}
+
+	// Sanitize `next` — must be a same-origin path.
+	const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/admin";
+
+	if (submitted !== password) {
+		return c.redirect(`/admin/login?err=1&next=${encodeURIComponent(safeNext)}`, 302);
+	}
+
+	const token = await signAdminToken(password);
+	setAdminCookie(c, token);
+	return c.redirect(safeNext, 303);
+});
+
+/**
+ * Logout — clear the cookie and bounce to the login screen.
+ */
+app.get("/admin/logout", (c) => {
+	clearAdminCookie(c);
+	return c.redirect("/admin/login", 302);
+});
+
+/**
+ * Placeholder admin landing — wired up properly in 10.2.
+ * If we got here the middleware already let us through.
+ */
+app.get("/admin", (c) => {
+	return c.html(
+		page(
+			"Admin dashboard",
+			`<main class="min-h-screen flex flex-col items-center justify-center px-6">
+				<div class="w-full max-w-md text-center">
+					<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50 justify-center">
+						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
+						<span>Booth admin</span>
+					</div>
+					<h1 class="mt-3 text-3xl font-bold">Signed in</h1>
+					<p class="mt-2 text-white/60">Dashboard content lands in step 10.2.</p>
+					<a href="/admin/logout" class="mt-8 inline-block text-sm text-cf-orange hover:text-white underline underline-offset-4">
+						Sign out
+					</a>
+				</div>
+			</main>`,
+		),
+	);
 });
 
 // ---------------------------------------------------------------------------
