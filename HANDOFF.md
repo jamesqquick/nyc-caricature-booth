@@ -20,22 +20,45 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 5 complete (Step 5.4)
+## Current status — Step 6.2 complete
 
 Most recent commits:
 ```
+a2038ec feat: kiosk camera capture + R2 upload + responsive layout (step 6.2)
+cdb3b7e feat: kiosk idle screen with kioskPage shell (step 6.1)
+22762a1 docs: update HANDOFF for Phase 5 completion + architectural pivot
 709f1fd feat: workflow pushes live state to SessionDO end-to-end (step 5.4)
 b27930e feat: WebSocket fan-out on SessionDO via hibernation API (step 5.3)
 dc4e50d feat: validated state machine + self-delete alarm on SessionDO (step 5.2)
 eee0b9d feat: bare SessionDO with getState + setStatus (step 5.1)
 ef3a517 feat: full pipeline — composite postcard + store session in D1 (step 4.4)
 6eb7076 feat: add generate step with retries to caricature workflow (step 4.3)
-c4160ed fix: stop elapsed timer when workflow reaches terminal status
-9eb9f2b feat: add moderate step to caricature workflow (step 4.2)
-45e8ece feat: add bare Cloudflare Workflow skeleton (step 4.1)
 ```
 
-**Next up:** Step 6.1 — Idle screen for the kiosk app (iPad).
+**Next up:** Step 6.3 — Scene picker screen.
+
+### Phase 6 scope (recap)
+
+We agreed to break the iPad app into focused steps rather than one big
+end-to-end commit. Done so far:
+
+- 6.1 ✅ Idle landing (`/kiosk`) with "Tap to start"
+- 6.2 ✅ Camera capture (`/kiosk/capture`) — getUserMedia preview, shutter
+  with use/retake, uploads JPEG to R2 at `kiosk/<sessionId>/selfie.jpg`,
+  stashes `{ sessionId, selfieKey, size, capturedAt }` in sessionStorage
+  under `kiosk:selfie`, navigates to `/kiosk/scene` (currently a
+  placeholder that just renders the handoff payload).
+- 6.3 ⏳ **NEXT** — Scene picker. Read `kiosk:selfie` from sessionStorage,
+  render the 6 scenes from `env.CONFIG` (KV key `scenes`) as a tappable
+  grid in portrait, on tap stash `{ ...selfie, sceneId, sceneName }` and
+  navigate to the next placeholder.
+- 6.4 — Kiosk-side workflow trigger (POST a `/api/kiosk/start` that takes
+  `{ sessionId, selfieKey, sceneId }`, mints the workflow with the
+  `publicOrigin` of the request, redirects to the status screen).
+- 6.5 — Kiosk-styled status screen (consumes the existing
+  `/api/session/:id/ws` for live updates instead of the `/test-workflow-
+  moderate/:id` dev page).
+- 6.6 — Done / "thanks" screen with the postcard + QR-back-to-pickup hint.
 
 ### Architectural pivot during Phase 5
 
@@ -213,6 +236,10 @@ All test endpoints stay in place during development — they'll be cleaned up be
 11. **`markSession` in the workflow is best-effort** — failures inside `markSession`/`deleteSession` are caught and logged. The workflow is the source of truth; the SessionDO is just a live UX mirror. Never wrap markSession in a `step.do` (that would replay state transitions on retry).
 12. **SessionDO is SQLite-backed but uses KV-style storage today** — `new_sqlite_classes: ["SessionDO"]` in `wrangler.jsonc`. The whole `SessionState` blob lives under one key (`state`) so reads/writes are atomic. SQLite mode preserves the option to add SQL tables later without a class-replacement migration.
 13. **SessionDO self-deletes via alarm** — `markStep('done')` and `markStep('errored')` schedule a 5-minute alarm that calls `deleteAll()`. The workflow does NOT call `delete()` explicitly so late-connecting clients still see the final state.
+14. **`kioskPage` shell uses `min-h-[100dvh] overscroll-none`** (not `h-full overflow-hidden`) so short desktop viewports don't clip content. iPad-locked feel comes from `overscroll-none` + `user-scalable=no` + `select-none touch-manipulation`, not from blocking overflow.
+15. **Capture screen mirrors the preview UI but NOT the canvas frame.** The `<video>` and frozen `<img>` previews use `-scale-x-100` so the user sees themselves naturally; the canvas-to-blob capture path draws the un-mirrored frame so text on shirts stays readable for FLUX/moderation.
+16. **Two storage prefixes for R2 selfies now:** legacy `workflow-test/<sessionId>/selfie.<ext>` (used by `/test-workflow-moderate` POST) and `kiosk/<sessionId>/selfie.jpg` (used by the new kiosk capture screen). `/api/run-img` accepts both `runs/` and `kiosk/` prefixes; the `workflow-test/` prefix is intentionally NOT readable through that proxy (test endpoints don't render uploaded selfies).
+17. **Kiosk session id is minted by the upload endpoint, not the client.** `POST /api/kiosk/selfie` generates `crypto.randomUUID()`, returns it, and the client stashes it. The eventual kiosk workflow trigger (6.4) should pass that same sessionId so the SessionDO ID matches the R2 prefix matches the QR target.
 
 ---
 
@@ -251,12 +278,12 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 5.3 ✅ WebSocket endpoint (hibernation API)
 - 5.4 ✅ Workflow pushes live state to SessionDO end-to-end
 
-### Phase 6 — Kiosk App (iPad) 🚧 NEXT
-- 6.1 ⏳ Idle screen
-- 6.2 Camera capture screen
-- 6.3 Scene picker screen
-- 6.4 Submit to backend
-- 6.5 Status screen with WebSocket (subscribes to SessionDO)
+### Phase 6 — Kiosk App (iPad) 🚧
+- 6.1 ✅ Idle screen
+- 6.2 ✅ Camera capture screen (getUserMedia + R2 upload)
+- 6.3 ⏳ **NEXT** — Scene picker screen
+- 6.4 Submit to backend (mint workflow from kiosk)
+- 6.5 Kiosk-styled status screen (subscribes to SessionDO)
 - 6.6 Done screen
 
 ### Phase 7 — Big Screen App (slimmed down — see pivot note above)
