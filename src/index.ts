@@ -334,7 +334,15 @@ function renderAdminRowActions(r: AdminSessionRow): string {
 			</button>`,
 		);
 	}
-	if (buttons.length === 0) return `<span class="text-xs text-white/30">—</span>`;
+	// Delete button — always available (privacy right-to-delete).
+	buttons.push(
+		`<button type="button"
+			data-action="delete-session"
+			data-session="${escapeAttr(r.sessionId)}"
+			class="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs text-red-400 hover:bg-red-500/20 hover:border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition">
+			🗑️ Delete
+		</button>`,
+	);
 	return `<div class="inline-flex items-center gap-1.5 justify-end">${buttons.join("")}</div>`;
 }
 
@@ -630,7 +638,11 @@ app.get("/admin", async (c) => {
 							+ ' class="inline-flex items-center rounded-full border border-white/15 bg-white/[0.04] px-3 py-1 text-xs text-white/80 hover:border-white/30 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition">📧 Resend email</button>'
 						);
 					}
-					if (buttons.length === 0) return '<span class="text-xs text-white/30">—</span>';
+					// Delete button — always available (privacy right-to-delete).
+					buttons.push(
+						'<button type="button" data-action="delete-session" data-session="' + escapeHtml(r.sessionId) + '"'
+						+ ' class="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs text-red-400 hover:bg-red-500/20 hover:border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition">🗑️ Delete</button>'
+					);
 					return '<div class="inline-flex items-center gap-1.5 justify-end">' + buttons.join("") + '</div>';
 				}
 
@@ -792,6 +804,17 @@ app.get("/admin", async (c) => {
 							method: "POST",
 						}).then(function () {
 							toast("Resent email for " + shortId);
+						});
+					} else if (action === "delete-session") {
+						if (!confirm("Permanently delete ALL data for session " + shortId + "…?\n\nThis removes the selfie, caricature, postcard, print jobs, and email from our systems. Cannot be undone.")) {
+							btn.disabled = false;
+							return;
+						}
+						promise = callJson("/api/admin/session/" + encodeURIComponent(sessionId), {
+							method: "DELETE",
+						}).then(function (j) {
+							toast("Deleted session " + shortId + " (" + (j.deleted || []).length + " items)");
+							poll();
 						});
 					} else {
 						btn.disabled = false;
@@ -987,6 +1010,93 @@ app.post("/api/admin/reseed-scenes", async (c) => {
 	await c.env.CONFIG.put("scenes", payload);
 	console.log(`[admin-reseed] wrote ${scenesSeed.length} scenes to KV`);
 	return c.json({ ok: true, count: scenesSeed.length });
+});
+
+/**
+ * Manual control: delete all data for a session (privacy right-to-delete).
+ *
+ * Removes:
+ *   - D1 sessions row
+ *   - D1 print_jobs rows for this session
+ *   - R2 objects: kiosk/<id>/selfie.jpg, runs/<id>/caricature.*, runs/<id>/postcard.jpg
+ *   - SessionDO storage (if the DO is still alive)
+ *
+ * Does NOT recall already-printed physical postcards — that's out of scope.
+ * After deletion, /p/:id shows the branded 404.
+ *
+ * DELETE /api/admin/session/:id
+ */
+app.delete("/api/admin/session/:id", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) {
+		return c.json({ error: "invalid session id" }, 400);
+	}
+
+	// Check the session exists before doing destructive work.
+	const session = await c.env.DB.prepare(
+		"SELECT id, selfie_key, caricature_key, postcard_key FROM sessions WHERE id = ?",
+	)
+		.bind(id)
+		.first<{
+			id: string;
+			selfie_key: string | null;
+			caricature_key: string | null;
+			postcard_key: string | null;
+		}>();
+
+	if (!session) {
+		return c.json({ error: "session not found" }, 404);
+	}
+
+	const deleted: string[] = [];
+
+	// 1. Delete R2 objects. We try all known key patterns; missing keys
+	//    are silently ignored by R2.delete().
+	const r2Keys = [
+		`kiosk/${id}/selfie.jpg`,
+		session.selfie_key,
+		session.caricature_key,
+		session.postcard_key,
+	].filter((k): k is string => !!k);
+
+	// Deduplicate (selfie_key may equal the kiosk/ path).
+	const uniqueR2Keys = [...new Set(r2Keys)];
+	for (const key of uniqueR2Keys) {
+		try {
+			await c.env.BUCKET.delete(key);
+			deleted.push(`r2:${key}`);
+		} catch (err) {
+			console.warn(`[admin-delete] R2 delete failed key=${key}: ${err}`);
+		}
+	}
+
+	// 2. Delete print_jobs rows.
+	const printResult = await c.env.DB.prepare(
+		"DELETE FROM print_jobs WHERE session_id = ?",
+	)
+		.bind(id)
+		.run();
+	const printDeleted = printResult.meta.changes ?? 0;
+	if (printDeleted > 0) deleted.push(`d1:print_jobs(${printDeleted})`);
+
+	// 3. Delete the sessions row.
+	await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
+	deleted.push("d1:sessions");
+
+	// 4. Force-delete the SessionDO (best-effort — it may already be gone).
+	try {
+		const doId = c.env.SESSION.idFromName(id);
+		const stub = c.env.SESSION.get(doId);
+		await stub.delete();
+		deleted.push("do:session");
+	} catch (err) {
+		// DO may have already self-deleted via alarm — that's fine.
+		console.warn(`[admin-delete] DO delete failed session=${id}: ${err}`);
+	}
+
+	console.log(`[admin-delete] session=${id} deleted=[${deleted.join(", ")}]`);
+
+	return c.json({ ok: true, sessionId: id, deleted });
 });
 
 // ---------------------------------------------------------------------------
