@@ -23,6 +23,9 @@ import {
 	loadAdminSessions,
 	loadAdminStats,
 } from "./lib/admin-data";
+// Bundled scenes seed — used by the admin "Re-seed scenes" control to push
+// the canonical scene definitions into KV without needing wrangler CLI.
+import scenesSeed from "../seed/scenes.json";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 export { SessionDO } from "./session/session";
@@ -155,7 +158,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "10.3" });
+	return c.json({ status: "ok", step: "10.4" });
 });
 
 // ---------------------------------------------------------------------------
@@ -275,7 +278,7 @@ function renderAdminSceneBreakdown(stats: AdminStats): string {
 
 function renderAdminTableBody(rows: AdminSessionRow[]): string {
 	if (rows.length === 0) {
-		return `<tr><td colspan="7" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>`;
+		return `<tr><td colspan="8" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>`;
 	}
 	return rows
 		.map((r) => {
@@ -291,10 +294,47 @@ function renderAdminTableBody(rows: AdminSessionRow[]): string {
 				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${escapeHtml(adminFmtDuration(r.pipelineDurationMs))}</td>` +
 				`<td class="px-4 py-3 text-white/60">${escapeHtml(r.emailMasked ?? "—")}</td>` +
 				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminPrintClass(r.printStatus)}">${escapeHtml(printStatus)}</span></td>` +
+				`<td class="px-4 py-3 text-right whitespace-nowrap">${renderAdminRowActions(r)}</td>` +
 				`</tr>`
 			);
 		})
 		.join("");
+}
+
+/**
+ * Per-row action buttons. Visible buttons depend on the row state:
+ *   - "Retry print"  → completed + (no print job OR last print failed)
+ *   - "Resend email" → hasEmail (regardless of send success — we can re-send)
+ * Each button carries data-action + data-session for the JS click delegator.
+ */
+function renderAdminRowActions(r: AdminSessionRow): string {
+	const buttons: string[] = [];
+	const isCompleted = r.status === "completed" && !!r.postcardKey;
+	const canPrint =
+		isCompleted &&
+		(r.printStatus == null || r.printStatus === "failed");
+	if (canPrint) {
+		buttons.push(
+			`<button type="button"
+				data-action="retry-print"
+				data-session="${escapeAttr(r.sessionId)}"
+				class="inline-flex items-center rounded-full border border-cf-orange/40 bg-cf-orange/10 px-3 py-1 text-xs text-cf-orange hover:bg-cf-orange/20 hover:border-cf-orange/60 disabled:opacity-50 disabled:cursor-not-allowed transition">
+				🖨️ Retry print
+			</button>`,
+		);
+	}
+	if (r.hasEmail && isCompleted) {
+		buttons.push(
+			`<button type="button"
+				data-action="resend-email"
+				data-session="${escapeAttr(r.sessionId)}"
+				class="inline-flex items-center rounded-full border border-white/15 bg-white/[0.04] px-3 py-1 text-xs text-white/80 hover:border-white/30 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition">
+				📧 Resend email
+			</button>`,
+		);
+	}
+	if (buttons.length === 0) return `<span class="text-xs text-white/30">—</span>`;
+	return `<div class="inline-flex items-center gap-1.5 justify-end">${buttons.join("")}</div>`;
 }
 
 /**
@@ -430,6 +470,24 @@ app.get("/admin", async (c) => {
 					</div>
 				</header>
 
+				<section class="mb-6 flex flex-wrap items-center gap-2">
+					<a
+						href="/api/test-print-job"
+						target="_blank" rel="noopener"
+						class="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-4 py-2 text-xs text-white/80 hover:border-white/30 hover:text-white transition"
+					>
+						🧪 Seed test print job
+					</a>
+					<button
+						type="button"
+						id="admin-reseed-btn"
+						class="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-4 py-2 text-xs text-white/80 hover:border-white/30 hover:text-white disabled:opacity-50 transition"
+					>
+						♻️ Re-seed scenes
+					</button>
+					<span id="admin-toast" class="hidden text-xs text-emerald-300"></span>
+				</section>
+
 				<section id="admin-stats" class="mb-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
 					${renderAdminStatCards(stats)}
 				</section>
@@ -456,6 +514,7 @@ app.get("/admin", async (c) => {
 									<th class="px-4 py-3 font-medium">Duration</th>
 									<th class="px-4 py-3 font-medium">Email</th>
 									<th class="px-4 py-3 font-medium">Print</th>
+									<th class="px-4 py-3 font-medium text-right">Actions</th>
 								</tr>
 							</thead>
 							<tbody id="admin-tbody" class="divide-y divide-white/5">
@@ -521,6 +580,26 @@ app.get("/admin", async (c) => {
 					return m + "m " + (s % 60) + "s";
 				}
 
+				function renderActions(r) {
+					var buttons = [];
+					var isCompleted = r.status === "completed" && !!r.postcardKey;
+					var canPrint = isCompleted && (r.printStatus == null || r.printStatus === "failed");
+					if (canPrint) {
+						buttons.push(
+							'<button type="button" data-action="retry-print" data-session="' + escapeHtml(r.sessionId) + '"'
+							+ ' class="inline-flex items-center rounded-full border border-cf-orange/40 bg-cf-orange/10 px-3 py-1 text-xs text-cf-orange hover:bg-cf-orange/20 hover:border-cf-orange/60 disabled:opacity-50 disabled:cursor-not-allowed transition">🖨️ Retry print</button>'
+						);
+					}
+					if (r.hasEmail && isCompleted) {
+						buttons.push(
+							'<button type="button" data-action="resend-email" data-session="' + escapeHtml(r.sessionId) + '"'
+							+ ' class="inline-flex items-center rounded-full border border-white/15 bg-white/[0.04] px-3 py-1 text-xs text-white/80 hover:border-white/30 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition">📧 Resend email</button>'
+						);
+					}
+					if (buttons.length === 0) return '<span class="text-xs text-white/30">—</span>';
+					return '<div class="inline-flex items-center gap-1.5 justify-end">' + buttons.join("") + '</div>';
+				}
+
 				function renderRow(r) {
 					var shortId = (r.sessionId || "").slice(0, 8);
 					var status = r.status || "pending";
@@ -534,6 +613,7 @@ app.get("/admin", async (c) => {
 						+ '<td class="px-4 py-3 text-white/60 whitespace-nowrap">' + escapeHtml(fmtDuration(r.pipelineDurationMs)) + '</td>'
 						+ '<td class="px-4 py-3 text-white/60">' + escapeHtml(r.emailMasked || "—") + '</td>'
 						+ '<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ' + printClass(r.printStatus) + '">' + escapeHtml(printStatus) + '</span></td>'
+						+ '<td class="px-4 py-3 text-right whitespace-nowrap">' + renderActions(r) + '</td>'
 						+ '</tr>';
 				}
 
@@ -580,7 +660,7 @@ app.get("/admin", async (c) => {
 
 				function renderSessions(sessions) {
 					if (sessions.length === 0) {
-						tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>';
+						tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>';
 					} else {
 						tbody.innerHTML = sessions.map(renderRow).join("");
 					}
@@ -615,6 +695,95 @@ app.get("/admin", async (c) => {
 					}
 				}
 
+				// ----- Manual controls (10.4) -----
+				var toastEl = document.getElementById("admin-toast");
+				var toastTimer = null;
+				function toast(msg, isError) {
+					toastEl.textContent = msg;
+					toastEl.classList.remove("hidden", "text-emerald-300", "text-red-300");
+					toastEl.classList.add(isError ? "text-red-300" : "text-emerald-300");
+					if (toastTimer) clearTimeout(toastTimer);
+					toastTimer = setTimeout(function () {
+						toastEl.classList.add("hidden");
+					}, 4000);
+				}
+
+				async function callJson(url, opts) {
+					var r = await fetch(url, Object.assign({ credentials: "same-origin" }, opts || {}));
+					if (r.status === 401) {
+						window.location.href = "/admin/login";
+						throw new Error("unauthorized");
+					}
+					var body = await r.json().catch(function () { return {}; });
+					if (!r.ok) {
+						var err = (body && body.error) ? body.error : ("HTTP " + r.status);
+						throw new Error(err);
+					}
+					return body;
+				}
+
+				// Per-row action buttons (delegated)
+				tbody.addEventListener("click", function (ev) {
+					var btn = ev.target.closest && ev.target.closest("button[data-action]");
+					if (!btn) return;
+					var action = btn.getAttribute("data-action");
+					var sessionId = btn.getAttribute("data-session");
+					if (!sessionId) return;
+					if (btn.disabled) return;
+					btn.disabled = true;
+					var shortId = sessionId.slice(0, 8);
+
+					var promise;
+					if (action === "retry-print") {
+						promise = callJson("/api/kiosk/print", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ sessionId: sessionId }),
+						}).then(function (j) {
+							if (j.alreadyQueued) {
+								toast("Print already queued for " + shortId + " (" + j.status + ")");
+							} else {
+								toast("Queued print for " + shortId);
+							}
+							// Force a quick refresh so the new print_status pill shows up.
+							poll();
+						});
+					} else if (action === "resend-email") {
+						promise = callJson("/api/admin/resend-email/" + encodeURIComponent(sessionId), {
+							method: "POST",
+						}).then(function () {
+							toast("Resent email for " + shortId);
+						});
+					} else {
+						btn.disabled = false;
+						return;
+					}
+
+					promise.catch(function (err) {
+						toast("Failed: " + err.message, true);
+					}).finally(function () {
+						btn.disabled = false;
+					});
+				});
+
+				// Re-seed scenes button
+				var reseedBtn = document.getElementById("admin-reseed-btn");
+				reseedBtn.addEventListener("click", function () {
+					if (reseedBtn.disabled) return;
+					if (!confirm("Re-write the bundled scenes.json into KV?")) return;
+					reseedBtn.disabled = true;
+					callJson("/api/admin/reseed-scenes", { method: "POST" })
+						.then(function (j) {
+							toast("Re-seeded " + (j.count || "?") + " scenes into KV");
+						})
+						.catch(function (err) {
+							toast("Failed: " + err.message, true);
+						})
+						.finally(function () {
+							reseedBtn.disabled = false;
+						});
+				});
+
 				// Initial paint is server-rendered; first client refresh fires after 10s.
 				setInterval(poll, 10000);
 			})();
@@ -639,6 +808,84 @@ app.get("/api/admin/sessions", async (c) => {
 app.get("/api/admin/stats", async (c) => {
 	const stats = await loadAdminStats(c.env);
 	return c.json(stats);
+});
+
+/**
+ * Manual control: re-fire the postcard email for a session. Looks up the
+ * session's existing email + postcard and calls sendPostcardEmail() via
+ * waitUntil — same code path as the original opt-in flow. The email body
+ * itself is currently stubbed (see lib/email.ts) so this primarily exercises
+ * the wiring; once real sending is enabled this lets staff bail people out
+ * who didn't get the original message.
+ *
+ * POST /api/admin/resend-email/:id
+ */
+app.post("/api/admin/resend-email/:id", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) {
+		return c.json({ error: "invalid session id" }, 400);
+	}
+
+	const session = await c.env.DB.prepare(
+		"SELECT id, status, postcard_key, scene_name, email FROM sessions WHERE id = ?",
+	)
+		.bind(id)
+		.first<{
+			id: string;
+			status: string | null;
+			postcard_key: string | null;
+			scene_name: string | null;
+			email: string | null;
+		}>();
+
+	if (!session) {
+		return c.json({ error: "session not found" }, 404);
+	}
+	if (session.status !== "completed" || !session.postcard_key) {
+		return c.json({ error: "session is not completed" }, 409);
+	}
+	if (!session.email) {
+		return c.json({ error: "no email on file for this session" }, 409);
+	}
+
+	const origin = new URL(c.req.url).origin;
+	const email = session.email;
+	const postcardKey = session.postcard_key;
+	const sceneName = session.scene_name ?? "NYC scene";
+
+	console.log(
+		`[admin-resend] session=${id} email=${email.slice(0, 3)}***`,
+	);
+
+	c.executionCtx.waitUntil(
+		sendPostcardEmail(c.env, {
+			to: email,
+			sessionId: id,
+			sceneName,
+			pickupUrl: `${origin}/p/${id}`,
+			postcardImageUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}`,
+			downloadUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`,
+		}).catch((err) => {
+			console.error(`[admin-resend] send failed session=${id} err=${err}`);
+		}),
+	);
+
+	return c.json({ ok: true, queued: true });
+});
+
+/**
+ * Manual control: re-write the bundled scenes.json snapshot into KV.
+ * Useful when the seed file has been updated in source but no one has
+ * re-run the wrangler CLI seed command yet. Reads the JSON at module
+ * bundle time, so a `wrangler deploy` is required to pick up new edits.
+ *
+ * POST /api/admin/reseed-scenes
+ */
+app.post("/api/admin/reseed-scenes", async (c) => {
+	const payload = JSON.stringify(scenesSeed);
+	await c.env.CONFIG.put("scenes", payload);
+	console.log(`[admin-reseed] wrote ${scenesSeed.length} scenes to KV`);
+	return c.json({ ok: true, count: scenesSeed.length });
 });
 
 // ---------------------------------------------------------------------------
