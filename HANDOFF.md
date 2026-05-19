@@ -239,8 +239,9 @@ npm install && npm start
 - `GET /kiosk/review` — review screen with "Make my postcard" CTA
 - `POST /api/kiosk/start` — validates `{ sessionId, selfieKey, sceneId }`, mints workflow, returns `{ instanceId, statusUrl }`
 - `GET /kiosk/status/:instanceId?session=<sid>` — live stepper (SessionDO WebSocket)
-- `GET /kiosk/done?session=<sid>` — done screen: postcard, QR, opt-in Print button, countdown
+- `GET /kiosk/done?session=<sid>` — done screen: postcard, QR, opt-in Print button (polls for completion), countdown
 - `POST /api/kiosk/print` — body `{ sessionId }`, enqueues a `print_jobs` row (idempotent)
+- `GET /api/kiosk/print/:jobId/status` — returns `{ status, printedAt?, errorMsg? }` — polled by /kiosk/done every 2s
 - `GET /api/kiosk/qr?url=<encoded>` — returns `qrPng(url, 400)` as `image/png` (origin-locked)
 
 ### Big screen display (Phase 7 — live)
