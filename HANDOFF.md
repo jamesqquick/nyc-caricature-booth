@@ -20,23 +20,20 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 6 complete ✅
+## Current status — Phase 7 complete ✅
 
 Most recent commits:
 ```
+0ab772f feat: branding pass — shimmer, glow, QR, CF badge (step 7.3)
+5242b05 feat: /api/display/feed + 30s polling on /display (step 7.2)
+3ce31b7 feat: big screen gallery route /display (step 7.1)
+3e44960 docs: update HANDOFF for Phase 6 completion + Phase 7 plan
 dadeb09 fix: remove QR from printed postcard composite step
 175c061 fix: QR unavailable + layout on /kiosk/done
 d76685b feat: kiosk done screen + QR endpoint (step 6.6 — Phase 6 complete)
-73ec8ef feat: kiosk live status screen (WS) + /kiosk/done placeholder (step 6.5)
-e83927a fix: stash sceneEmoji in sessionStorage so /kiosk/review renders scene card
-956ffe8 feat: kiosk → workflow trigger + review/status screens (step 6.4)
-e54ac74 feat: kiosk scene picker grid + /kiosk/review placeholder (step 6.3)
-a2038ec feat: kiosk camera capture + R2 upload + responsive layout (step 6.2)
-cdb3b7e feat: kiosk idle screen with kioskPage shell (step 6.1)
 ```
 
-**Next up:** Phase 7 — Big Screen App (static gallery, periodic D1 refresh,
-branding pass).
+**Next up:** Phase 8 — Print Queue + Agent.
 
 ### Phase 6 — complete kiosk flow
 
@@ -60,6 +57,21 @@ The full iPad flow is live end-to-end:
 sessionStorage keys used across the flow:
 - `kiosk:selfie` — `{ sessionId, selfieKey, size, capturedAt, sceneId, sceneName, sceneEmoji, sceneChosenAt }` — cleared on workflow submit
 - `kiosk:done` — `{ sessionId, sceneId, sceneName, selfieKey, caricatureKey, postcardKey, postcardUrl, finishedAt }` — set by status screen on `done` WS frame, cleared by done screen on auto-return
+
+### Phase 7 — big screen display
+
+The `/display` route is a passive gallery for a TV/monitor next to the booth.
+Uses the standard `page()` shell (not `kioskPage`). No touch-lock, no session
+state — just a slow-refresh view of recent postcards.
+
+- Server-renders last 8 completed postcards from D1 as a 4-column grid
+- Client JS polls `GET /api/display/feed` every 30s, diffs by sessionId,
+  only patches the DOM when the list changes
+- Header: "NY Tech Week 2026" text (left), QR to production URL (center),
+  "I 🧡 NY" wordmark with animated glow pulse (right)
+- Footer: "Built end-to-end on Cloudflare" pill badge
+- Idle shimmer: CSS gradient sweep (10s cycle, subtle orange tint)
+- Empty state: "No postcards yet — be the first!" when D1 has no completed rows
 
 ### Architectural pivot during Phase 5
 
@@ -191,6 +203,10 @@ npx wrangler kv key put --binding=CONFIG --remote scenes --path=seed/scenes.json
 - `GET /kiosk/done?session=<sid>` — done screen: postcard, QR, countdown
 - `GET /api/kiosk/qr?url=<encoded>` — returns `qrPng(url, 400)` as `image/png` (origin-locked)
 
+### Big screen display (Phase 7 — live)
+- `GET /display` — gallery of last 8 completed postcards (30s polling, shimmer, QR)
+- `GET /api/display/feed` — JSON feed of last 8 completed sessions for client polling
+
 ### Public landing
 - `GET /` — branded landing page with links to every test page
 - `GET /p/:id` — digital pickup landing (shows postcard for UUID sessions)
@@ -302,10 +318,10 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 6.5 ✅ Live status screen (4-step stepper, SessionDO WebSocket)
 - 6.6 ✅ Done screen (postcard, QR, 60s countdown, auto-return to idle)
 
-### Phase 7 — Big Screen App (slimmed down — see pivot note above)
-- 7.1 Static gallery layout (recent caricatures + QR + project info)
-- 7.2 Periodic refresh from D1 for new finished postcards
-- 7.3 Idle animation / branding pass
+### Phase 7 — Big Screen App ✅
+- 7.1 ✅ Static gallery layout (recent caricatures + QR + project info)
+- 7.2 ✅ Periodic refresh from D1 for new finished postcards
+- 7.3 ✅ Idle animation / branding pass
 
 ### Phase 8 — Print Queue + Agent
 - 8.1 Cloudflare Queue binding (`PRINT_QUEUE`)
@@ -350,7 +366,7 @@ All test endpoints stay in place during development — they'll be cleaned up be
 
 ---
 
-## Phase 7 plan (next up)
+## Phase 7 plan (complete ✅)
 
 Big Screen App — a separate display (TV/monitor) that shows a gallery of
 recently completed caricatures + project info + QR to start a session.
