@@ -133,7 +133,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "6.6" });
+	return c.json({ status: "ok", step: "7.1" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1345,6 +1345,100 @@ app.get("/kiosk/done", (c) => {
 				});
 			})();
 			</script>`,
+		),
+	);
+});
+
+/**
+ * Big Screen App — static gallery (step 7.1).
+ *
+ * Renders the last 8 completed postcards from D1 as a grid for display on a
+ * TV/monitor next to the booth. Uses the standard `page()` shell (not
+ * `kioskPage` — this isn't a touch-locked iPad).
+ *
+ * No client-side polling yet — that lands in step 7.2 along with
+ * `/api/display/feed`. This is a server-rendered snapshot; the page only
+ * refreshes when someone reloads it.
+ */
+app.get("/display", async (c) => {
+	const { results } = await c.env.DB.prepare(
+		`SELECT id, scene_name, postcard_key, completed_at
+		 FROM sessions
+		 WHERE status = 'completed' AND postcard_key IS NOT NULL
+		 ORDER BY completed_at DESC
+		 LIMIT 8`,
+	).all<{
+		id: string;
+		scene_name: string | null;
+		postcard_key: string;
+		completed_at: number | null;
+	}>();
+
+	const now = Math.floor(Date.now() / 1000);
+	const formatAge = (completedAt: number | null): string => {
+		if (!completedAt) return "just now";
+		const diff = Math.max(0, now - completedAt);
+		if (diff < 60) return "just now";
+		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+		return `${Math.floor(diff / 86400)}d ago`;
+	};
+
+	const cards = results
+		.map((row) => {
+			const sceneName = row.scene_name ?? "Untitled scene";
+			const age = formatAge(row.completed_at);
+			const imgUrl = `/api/run-img?key=${encodeURIComponent(row.postcard_key)}`;
+			return `<article class="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 shadow-[0_0_24px_rgba(0,0,0,0.4)]">
+				<div class="aspect-[3/2] w-full overflow-hidden bg-black">
+					<img src="${imgUrl}" alt="${sceneName} postcard" class="h-full w-full object-cover" loading="lazy" />
+				</div>
+				<div class="flex items-center justify-between px-4 py-3">
+					<div class="text-base font-semibold">${sceneName}</div>
+					<div class="text-xs uppercase tracking-widest text-white/50">${age}</div>
+				</div>
+			</article>`;
+		})
+		.join("");
+
+	const empty = `<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.02] py-24 text-center">
+		<div class="text-5xl">🗽</div>
+		<p class="mt-4 text-lg text-white/70">No postcards yet — be the first!</p>
+		<p class="mt-1 text-sm text-white/40">Walk over to the iPad to get started.</p>
+	</div>`;
+
+	return c.html(
+		page(
+			"I 🧡 NY — Gallery",
+			`<header class="px-12 pt-10 pb-8 flex items-center justify-between">
+				<div class="flex items-center gap-3 text-sm uppercase tracking-widest text-white/60">
+					<img src="/cloudflare-logo.png" alt="" class="h-6 w-6" />
+					<span>Cloudflare &middot; NY Tech Week 2026</span>
+				</div>
+				<div class="flex items-center gap-4 text-4xl font-black leading-none">
+					<span>I</span>
+					<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-10 w-auto drop-shadow-[0_0_18px_rgba(246,130,31,0.55)]" />
+					<span>NY</span>
+				</div>
+			</header>
+			<main class="px-12 pb-12">
+				<div class="mb-8 flex items-end justify-between">
+					<div>
+						<h1 class="text-5xl md:text-6xl font-black tracking-tight">Fresh from the booth</h1>
+						<p class="mt-3 text-lg text-white/60">AI caricature postcards, generated live on Cloudflare.</p>
+					</div>
+					<a href="/kiosk" class="hidden md:inline-flex items-center gap-2 rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">
+						Create yours now
+					</a>
+				</div>
+				<section id="gallery" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+					${results.length === 0 ? empty : cards}
+				</section>
+			</main>
+			<footer class="px-12 py-8 flex items-center justify-between border-t border-white/5 text-sm text-white/50">
+				<div>Built end-to-end on Cloudflare</div>
+				<div class="text-white/40">${results.length} postcard${results.length === 1 ? "" : "s"} shown</div>
+			</footer>`,
 		),
 	);
 });
