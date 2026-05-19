@@ -60,7 +60,12 @@ const kioskPage = (title: string, body: string) => `<!doctype html>
 		<link rel="stylesheet" href="/app.css" />
 		<link rel="icon" href="/cloudflare-logo.png" />
 	</head>
-	<body class="h-full bg-cf-ink text-white font-display antialiased overflow-hidden select-none touch-manipulation">
+	<!--
+		min-h-[100dvh] + overscroll-none = looks like a locked kiosk on iPad
+		but degrades gracefully on short desktop windows (content stays
+		reachable instead of being clipped behind the bottom of the viewport).
+	-->
+	<body class="min-h-[100dvh] bg-cf-ink text-white font-display antialiased overscroll-none select-none touch-manipulation">
 		${body}
 	</body>
 </html>`;
@@ -87,11 +92,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 6.1 &middot; Kiosk idle screen
+					Step 6.2 &middot; Kiosk camera capture
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/kiosk" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						📱 Kiosk idle screen (step 6.1) →
+						📱 Kiosk: idle → capture → scene placeholder (step 6.2) →
 					</a>
 					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚡ Full pipeline + live Session DO (step 5.4)
@@ -127,16 +132,63 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "6.1" });
+	return c.json({ status: "ok", step: "6.2" });
 });
 
 // ---------------------------------------------------------------------------
 // Kiosk app (Phase 6) — the iPad experience.
 //
-// 6.1 (this commit): static idle screen with a big "Tap to start" CTA that
-// links to the (placeholder) /kiosk/capture screen. Tuned for a 10.9" iPad
-// in portrait running Safari Guided Access.
+// 6.1: static idle screen with a big "Tap to start" CTA that links to the
+// (placeholder) /kiosk/capture screen.
+// 6.2 (this commit): live camera capture screen. After 'Use this photo' the
+// blob is uploaded to R2 under kiosk/<sessionId>/selfie.jpg and the result is
+// stashed in sessionStorage; the user is then sent to /kiosk/scene
+// (placeholder until 6.3 ships the real picker).
 // ---------------------------------------------------------------------------
+
+/**
+ * Uploads a kiosk selfie blob to R2 and mints a fresh sessionId.
+ * Returns the new sessionId + selfieKey so the kiosk client can stash them
+ * and pass them along to the scene picker (6.3) and workflow trigger (6.4).
+ * POST /api/kiosk/selfie  (multipart: selfie=file)
+ */
+app.post("/api/kiosk/selfie", async (c) => {
+	let inForm: FormData;
+	try {
+		inForm = await c.req.formData();
+	} catch (err) {
+		return c.json(
+			{ error: "expected multipart/form-data with 'selfie'", details: String(err) },
+			400,
+		);
+	}
+	const selfie = inForm.get("selfie");
+	if (!(selfie instanceof File) || selfie.size === 0) {
+		return c.json({ error: "missing selfie file" }, 400);
+	}
+
+	const sessionId = crypto.randomUUID();
+	// Always JPEG: the kiosk client encodes via canvas.toBlob("image/jpeg").
+	const selfieKey = `kiosk/${sessionId}/selfie.jpg`;
+
+	const buf = await selfie.arrayBuffer();
+	await c.env.BUCKET.put(selfieKey, buf, {
+		httpMetadata: { contentType: selfie.type || "image/jpeg" },
+		customMetadata: {
+			sessionId,
+			source: "kiosk",
+			capturedAt: new Date().toISOString(),
+		},
+	});
+
+	return c.json({
+		ok: true,
+		sessionId,
+		selfieKey,
+		size: buf.byteLength,
+		contentType: selfie.type || "image/jpeg",
+	});
+});
 
 /**
  * Idle / landing screen. This is what passersby see when no one is using
@@ -187,25 +239,294 @@ app.get("/kiosk", (c) => {
 });
 
 /**
- * Capture screen — placeholder until step 6.2 wires the camera. For now it
- * just confirms navigation works and links back to idle.
+ * Capture screen (step 6.2).
+ *
+ * Live <video> preview from the front camera via getUserMedia. Big shutter
+ * button freezes a frame onto a hidden <canvas>. After freeze, user picks
+ * "Use this photo" (uploads to R2 and advances) or "Retake" (reattaches
+ * the live stream).
+ *
+ * On approval: POSTs the JPEG to /api/kiosk/selfie, stashes
+ * { sessionId, selfieKey } in sessionStorage, navigates to /kiosk/scene.
  * GET /kiosk/capture
  */
 app.get("/kiosk/capture", (c) => {
 	return c.html(
 		kioskPage(
-			"Capture — coming in 6.2",
-			`<main class="h-full w-full flex flex-col items-center justify-center px-8 text-center">
-				<div class="text-[clamp(2rem,8vw,5rem)] font-bold leading-tight">Camera screen</div>
-				<p class="mt-4 max-w-md text-lg text-white/70">
-					This is the placeholder for the capture screen. Step 6.2 will wire up the
-					camera, framing overlay, and shutter button.
-				</p>
-				<a href="/kiosk"
-					class="mt-12 inline-flex items-center justify-center rounded-full border border-white/30 px-10 py-4 text-base text-white/80 hover:border-white/60 hover:text-white active:scale-[0.98] transition">
-					← Back to idle
-				</a>
-			</main>`,
+			"Capture your selfie",
+			`<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
+				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
+					<a href="/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
+					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 1 of 3 · Selfie</span>
+					<span class="w-12"></span>
+				</header>
+
+				<!--
+					Center column. min-h-0 lets the flex child actually shrink below
+					its content size; without it the video frame's intrinsic height
+					can push the footer off the bottom of a short viewport.
+				-->
+				<section class="flex-1 min-h-0 flex flex-col items-center justify-center px-4 sm:px-6 py-2 gap-3">
+					<!--
+						Video frame. The outer wrapper limits the height to the
+						available column space so the footer always stays visible;
+						the inner div maintains the 3:4 aspect ratio inside that box.
+					-->
+					<div class="relative h-full w-full max-w-[640px] max-h-full flex items-center justify-center">
+						<div class="relative h-full max-h-full aspect-[3/4] rounded-[2.5rem] overflow-hidden bg-black/60 ring-1 ring-white/10 shadow-[0_0_60px_rgba(246,130,31,0.15)]">
+							<!-- Live video preview (mirrored so the user sees themselves naturally) -->
+							<video id="cap-video" class="absolute inset-0 h-full w-full object-cover -scale-x-100" playsinline muted autoplay></video>
+
+							<!-- Frozen preview after shutter. Hidden until capture. -->
+							<img id="cap-preview" class="absolute inset-0 h-full w-full object-cover hidden -scale-x-100" alt="captured frame" />
+
+							<!-- Soft circular framing guide -->
+							<div class="absolute inset-0 pointer-events-none flex items-center justify-center">
+								<div class="size-[78%] rounded-full border-2 border-white/30 mix-blend-screen"></div>
+							</div>
+
+							<!-- Loading / error overlay -->
+							<div id="cap-overlay" class="absolute inset-0 flex flex-col items-center justify-center text-center px-6 bg-black/70 backdrop-blur">
+								<div class="text-xl font-semibold">Starting camera…</div>
+								<p class="mt-2 text-sm text-white/60">If you see a permissions prompt, tap Allow.</p>
+							</div>
+						</div>
+					</div>
+
+					<p id="cap-hint" class="shrink-0 text-xs sm:text-sm text-white/60 text-center max-w-md">
+						Frame your face inside the circle. Tap the shutter when you're ready.
+					</p>
+				</section>
+
+				<!-- Control bar. shrink-0 + safe-area-aware padding so it stays visible. -->
+				<footer class="shrink-0 px-6 pt-2 pb-4 sm:pb-8" style="padding-bottom: max(1rem, env(safe-area-inset-bottom));">
+					<div id="cap-shutter-row" class="flex items-center justify-center">
+						<button id="cap-shutter" disabled
+							class="size-16 sm:size-24 rounded-full bg-white border-[5px] sm:border-[6px] border-white/30 shadow-[0_0_40px_rgba(255,255,255,0.35)] disabled:opacity-40 disabled:shadow-none active:scale-95 transition">
+							<span class="sr-only">Take photo</span>
+						</button>
+					</div>
+					<div id="cap-confirm-row" class="hidden flex-col gap-2 sm:gap-3 items-stretch max-w-md mx-auto">
+						<button id="cap-use"
+							class="rounded-full bg-cf-orange px-8 py-3 sm:py-5 text-base sm:text-xl font-bold text-black shadow-[0_0_40px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition">
+							Use this photo
+						</button>
+						<button id="cap-retake"
+							class="rounded-full border border-white/30 px-8 py-2.5 sm:py-4 text-sm sm:text-base text-white/80 hover:border-white/60 hover:text-white active:scale-[0.98] transition">
+							Retake
+						</button>
+					</div>
+					<p id="cap-status" class="mt-2 sm:mt-4 text-center text-[11px] sm:text-xs text-white/40 min-h-[1rem]"></p>
+				</footer>
+			</main>
+
+			<script>
+			(function () {
+				const video = document.getElementById("cap-video");
+				const preview = document.getElementById("cap-preview");
+				const overlay = document.getElementById("cap-overlay");
+				const hint = document.getElementById("cap-hint");
+				const shutter = document.getElementById("cap-shutter");
+				const shutterRow = document.getElementById("cap-shutter-row");
+				const confirmRow = document.getElementById("cap-confirm-row");
+				const useBtn = document.getElementById("cap-use");
+				const retakeBtn = document.getElementById("cap-retake");
+				const statusEl = document.getElementById("cap-status");
+
+				let stream = null;
+				let capturedBlob = null;
+				let capturedUrl = null;
+
+				function setOverlay(html) {
+					if (html === null) {
+						overlay.classList.add("hidden");
+					} else {
+						overlay.innerHTML = html;
+						overlay.classList.remove("hidden");
+					}
+				}
+
+				async function startCamera() {
+					setOverlay('<div class="text-xl font-semibold">Starting camera…</div><p class="mt-2 text-sm text-white/60">If you see a permissions prompt, tap Allow.</p>');
+					if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+						setOverlay('<div class="text-xl font-semibold text-red-300">This browser can\\'t access the camera.</div><p class="mt-2 text-sm text-white/60">Try Safari on iPad or Chrome on desktop.</p>');
+						return;
+					}
+					try {
+						stream = await navigator.mediaDevices.getUserMedia({
+							video: {
+								facingMode: "user",
+								width: { ideal: 1280 },
+								height: { ideal: 1280 },
+							},
+							audio: false,
+						});
+						video.srcObject = stream;
+						await video.play().catch(function () { /* autoplay may need user gesture; play() retried below */ });
+						setOverlay(null);
+						shutter.disabled = false;
+					} catch (err) {
+						console.error("getUserMedia failed:", err);
+						const denied = String(err && err.name) === "NotAllowedError";
+						setOverlay(
+							'<div class="text-xl font-semibold text-red-300">' +
+							(denied ? "Camera access blocked" : "Camera unavailable") +
+							'</div><p class="mt-2 text-sm text-white/60">' +
+							(denied
+								? "Open Settings → Safari → Camera and allow access, then reload."
+								: "Make sure no other app is using the camera, then reload.") +
+							'</p>'
+						);
+					}
+				}
+
+				function stopCamera() {
+					if (stream) {
+						for (const t of stream.getTracks()) t.stop();
+						stream = null;
+					}
+				}
+
+				function takePhoto() {
+					if (!video.videoWidth) return;
+					const canvas = document.createElement("canvas");
+					canvas.width = video.videoWidth;
+					canvas.height = video.videoHeight;
+					// Note: we don't mirror the canvas. Server-side moderation /
+					// generation operates on the un-mirrored frame; only the UI
+					// previews show the mirrored version. This keeps text on shirts
+					// readable to FLUX.
+					const ctx = canvas.getContext("2d");
+					ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+					canvas.toBlob(function (blob) {
+						if (!blob) {
+							statusEl.textContent = "✗ Failed to capture frame.";
+							return;
+						}
+						capturedBlob = blob;
+						if (capturedUrl) URL.revokeObjectURL(capturedUrl);
+						capturedUrl = URL.createObjectURL(blob);
+						preview.src = capturedUrl;
+						preview.classList.remove("hidden");
+						video.classList.add("hidden");
+						stopCamera();
+						shutterRow.classList.add("hidden");
+						confirmRow.classList.remove("hidden");
+						confirmRow.classList.add("flex");
+						hint.textContent = "Looks good? Tap 'Use this photo' to continue.";
+					}, "image/jpeg", 0.92);
+				}
+
+				async function retake() {
+					capturedBlob = null;
+					if (capturedUrl) {
+						URL.revokeObjectURL(capturedUrl);
+						capturedUrl = null;
+					}
+					preview.classList.add("hidden");
+					video.classList.remove("hidden");
+					confirmRow.classList.add("hidden");
+					confirmRow.classList.remove("flex");
+					shutterRow.classList.remove("hidden");
+					hint.textContent = "Frame your face inside the circle. Tap the shutter when you're ready.";
+					statusEl.textContent = "";
+					await startCamera();
+				}
+
+				async function approve() {
+					if (!capturedBlob) return;
+					useBtn.disabled = true;
+					retakeBtn.disabled = true;
+					statusEl.textContent = "Uploading…";
+					try {
+						const fd = new FormData();
+						fd.append("selfie", capturedBlob, "selfie.jpg");
+						const r = await fetch("/api/kiosk/selfie", { method: "POST", body: fd });
+						const j = await r.json();
+						if (!r.ok || !j.ok) throw new Error(j.error || "upload failed");
+						sessionStorage.setItem("kiosk:selfie", JSON.stringify({
+							sessionId: j.sessionId,
+							selfieKey: j.selfieKey,
+							size: j.size,
+							capturedAt: Date.now(),
+						}));
+						statusEl.textContent = "✓ Uploaded. Pick a scene next…";
+						window.location.href = "/kiosk/scene";
+					} catch (err) {
+						console.error(err);
+						statusEl.textContent = "✗ " + (err && err.message ? err.message : String(err));
+						useBtn.disabled = false;
+						retakeBtn.disabled = false;
+					}
+				}
+
+				shutter.addEventListener("click", takePhoto);
+				useBtn.addEventListener("click", approve);
+				retakeBtn.addEventListener("click", retake);
+
+				// Stop the camera if the user navigates away — saves battery on the iPad.
+				window.addEventListener("pagehide", stopCamera);
+				window.addEventListener("beforeunload", stopCamera);
+
+				startCamera();
+			})();
+			</script>`,
+		),
+	);
+});
+
+/**
+ * Scene picker placeholder (step 6.3 will replace this).
+ * For now it just reads the sessionStorage handoff so we can verify the
+ * upload + handoff worked end-to-end.
+ * GET /kiosk/scene
+ */
+app.get("/kiosk/scene", (c) => {
+	return c.html(
+		kioskPage(
+			"Pick a scene — coming in 6.3",
+			`<main class="h-full w-full flex flex-col">
+				<header class="px-8 pt-8 pb-2 flex items-center justify-between">
+					<a href="/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
+					<span class="text-xs uppercase tracking-[0.25em] text-white/40">Step 2 of 3 · Scene</span>
+					<span class="w-12"></span>
+				</header>
+				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
+					<div class="text-[clamp(2rem,7vw,4rem)] font-bold leading-tight">Scene picker</div>
+					<p class="mt-4 max-w-md text-lg text-white/70">
+						Placeholder for step 6.3. Below is the handoff payload from the capture screen
+						(stored in sessionStorage).
+					</p>
+					<pre id="handoff" class="mt-8 max-w-md w-full text-left bg-black/40 border border-white/10 rounded-2xl p-4 text-xs text-white/70 whitespace-pre-wrap break-words">loading…</pre>
+					<img id="preview" alt="" class="mt-6 max-h-64 rounded-2xl border border-white/10 hidden" />
+					<a href="/kiosk/capture"
+						class="mt-12 inline-flex items-center justify-center rounded-full border border-white/30 px-10 py-4 text-base text-white/80 hover:border-white/60 hover:text-white active:scale-[0.98] transition">
+						← Retake selfie
+					</a>
+				</section>
+			</main>
+			<script>
+			(function () {
+				const handoffEl = document.getElementById("handoff");
+				const previewEl = document.getElementById("preview");
+				const raw = sessionStorage.getItem("kiosk:selfie");
+				if (!raw) {
+					handoffEl.textContent = "(no kiosk:selfie in sessionStorage — go back to /kiosk/capture)";
+					return;
+				}
+				try {
+					const data = JSON.parse(raw);
+					handoffEl.textContent = JSON.stringify(data, null, 2);
+					// 6.2 verification: prove the uploaded selfie is readable from R2.
+					if (data.selfieKey) {
+						previewEl.src = "/api/run-img?key=" + encodeURIComponent(data.selfieKey);
+						previewEl.classList.remove("hidden");
+					}
+				} catch (err) {
+					handoffEl.textContent = "(invalid kiosk:selfie payload): " + String(err);
+				}
+			})();
+			</script>`,
 		),
 	);
 });
@@ -1313,14 +1634,15 @@ app.get("/api/scene-grid-img", async (c) => {
 });
 
 /**
- * R2 image proxy constrained to the workflow `runs/` prefix.
- * Used by the workflow status page to preview caricature + postcard, and
- * by /p/:id to render the digital pickup postcard.
- * GET /api/run-img?key=runs/<sessionId>/(caricature|postcard).(jpg|png)
+ * R2 image proxy constrained to safe prefixes: `runs/` (workflow artifacts)
+ * and `kiosk/` (selfie uploads from the kiosk capture screen). Used by the
+ * workflow status page, the digital pickup landing, and the kiosk scene
+ * picker preview.
+ * GET /api/run-img?key=(runs|kiosk)/<sessionId>/...
  */
 app.get("/api/run-img", async (c) => {
 	const key = c.req.query("key");
-	if (!key || !key.startsWith("runs/")) {
+	if (!key || (!key.startsWith("runs/") && !key.startsWith("kiosk/"))) {
 		return c.json({ error: "invalid key" }, 400);
 	}
 	const obj = await c.env.BUCKET.get(key);
