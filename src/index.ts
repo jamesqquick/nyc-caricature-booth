@@ -10,6 +10,7 @@ import {
 	newPostcardId,
 	qrPng,
 } from "./lib/postcard";
+import { sendPostcardEmail } from "./lib/email";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 export { SessionDO } from "./session/session";
@@ -3693,10 +3694,10 @@ app.post("/api/p/:id/email", async (c) => {
 	// Verify the session is completed. No point in storing email for a
 	// session that never produced a postcard.
 	const session = await c.env.DB.prepare(
-		"SELECT id, status, postcard_key FROM sessions WHERE id = ?",
+		"SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
 	)
 		.bind(id)
-		.first<{ id: string; status: string | null; postcard_key: string | null }>();
+		.first<{ id: string; status: string | null; postcard_key: string | null; scene_name: string | null }>();
 
 	if (!session) {
 		return c.json({ error: "session not found" }, 404);
@@ -3712,6 +3713,25 @@ app.post("/api/p/:id/email", async (c) => {
 		.run();
 
 	console.log(`[email-optin] session=${id} email=${email.slice(0, 3)}***`);
+
+	// Fire-and-forget: send the postcard email. Don't fail the opt-in if
+	// the email fails — the address is already persisted in D1 and can be
+	// retried from the admin dashboard (Phase 10).
+	const origin = new URL(c.req.url).origin;
+	const postcardKey = session.postcard_key;
+	const sceneName = session.scene_name ?? "NYC scene";
+	c.executionCtx.waitUntil(
+		sendPostcardEmail(c.env, {
+			to: email,
+			sessionId: id,
+			sceneName,
+			pickupUrl: `${origin}/p/${id}`,
+			postcardImageUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}`,
+			downloadUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`,
+		}).catch((err) => {
+			console.error(`[email-optin] send failed session=${id} err=${err}`);
+		}),
+	);
 
 	return c.json({ ok: true, email });
 });

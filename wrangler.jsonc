@@ -55,6 +55,11 @@
 			"new_sqlite_classes": ["SessionDO"]
 		}
 	],
+	"send_email": [
+		{
+			"name": "EMAIL"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}
