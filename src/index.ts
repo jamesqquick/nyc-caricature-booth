@@ -8,6 +8,7 @@ import {
 	POSTCARD_W,
 	buildPostcard,
 	newPostcardId,
+	qrPng,
 } from "./lib/postcard";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
@@ -92,11 +93,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 6.5 &middot; Kiosk live status (WebSocket)
+					Phase 6 complete &middot; Full kiosk flow live
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/kiosk" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						📱 Kiosk: idle → capture → scene → review → live status → done (step 6.5) →
+						📱 Kiosk: idle → capture → scene → review → live status → done (6.6) →
 					</a>
 					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚡ Full pipeline + live Session DO (step 5.4)
@@ -132,7 +133,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "6.5" });
+	return c.json({ status: "ok", step: "6.6" });
 });
 
 // ---------------------------------------------------------------------------
@@ -271,6 +272,44 @@ app.post("/api/kiosk/start", async (c) => {
 		instanceId: instance.id,
 		sessionId,
 		statusUrl,
+	});
+});
+
+/**
+ * Generates a QR code PNG for the given URL and returns it as image/png.
+ * Used by /kiosk/done to render a scannable code for the digital pickup
+ * link without shipping a QR library to the client.
+ *
+ * The `url` query param is validated to start with the Worker's own origin
+ * so this endpoint can't be used as an open QR-proxy.
+ *
+ * GET /api/kiosk/qr?url=<encoded>
+ */
+app.get("/api/kiosk/qr", (c) => {
+	const raw = c.req.query("url");
+	if (!raw) return c.json({ error: "missing url param" }, 400);
+
+	let target: string;
+	try {
+		target = decodeURIComponent(raw);
+	} catch {
+		return c.json({ error: "invalid url encoding" }, 400);
+	}
+
+	// Only allow URLs that start with our own origin so this isn't an
+	// open proxy for arbitrary QR codes.
+	const workerOrigin = new URL(c.req.url).origin;
+	if (!target.startsWith(workerOrigin + "/") && target !== workerOrigin) {
+		return c.json({ error: "url must be on this origin" }, 403);
+	}
+
+	const png = qrPng(target, 400);
+	return new Response(png, {
+		headers: {
+			"content-type": "image/png",
+			// QR contents are deterministic; cache aggressively on CDN.
+			"cache-control": "public, max-age=31536000, immutable",
+		},
 	});
 });
 
@@ -1140,12 +1179,22 @@ app.get("/kiosk/status/:instanceId", (c) => {
 });
 
 /**
- * Done placeholder (step 6.6 will replace with the proper "thanks" screen
- * + QR back-to-pickup hint + auto-return-to-idle timer).
+ * Done screen (step 6.6).
  *
- * Reads kiosk:done out of sessionStorage (set by the status screen on the
- * final WS frame) and renders the postcard preview. Falls back to a
- * helpful message if someone lands here directly without a fresh session.
+ * Shown after the workflow completes. Reads the final session artifacts from
+ * sessionStorage (kiosk:done, stashed by the status screen on the last WS
+ * frame) and renders:
+ *   - The finished postcard image (full-width, landscape)
+ *   - A QR code pointing to /p/:sessionId for the digital-copy pickup page
+ *   - A "Pick up your print at the counter" banner
+ *   - A 60-second visible countdown before auto-returning to /kiosk.
+ *     Any tap/touch on the page resets the countdown so a user who's still
+ *     looking at their postcard or scanning the QR isn't yanked away.
+ *   - An orange "Start over" button that also resets (and on confirm returns
+ *     immediately to /kiosk).
+ *
+ * Falls back gracefully if sessionStorage is missing (page reload, direct
+ * link) by using the conventional R2 path runs/<sid>/postcard.jpg.
  *
  * GET /kiosk/done?session=<sid>
  */
@@ -1154,42 +1203,95 @@ app.get("/kiosk/done", (c) => {
 	const sessionId =
 		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
 
+	// Build the QR src at render time so the <img> tag is ready on first
+	// paint. We construct the pickup URL using the same origin as this
+	// request — same logic the workflow uses for postcardUrl.
+	const pickupUrl = sessionId
+		? `${new URL(c.req.url).origin}/p/${sessionId}`
+		: null;
+	const qrSrc = pickupUrl
+		? `/api/kiosk/qr?url=${encodeURIComponent(pickupUrl)}`
+		: null;
+
 	return c.html(
 		kioskPage(
-			"Your postcard",
-			`<main class="min-h-[100dvh] w-full flex flex-col">
-				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
+			"Your postcard is ready",
+			`<main id="done-root" class="min-h-[100dvh] w-full flex flex-col" style="touch-action:manipulation;">
+				<!--
+					Touch anywhere on the main element resets the idle countdown.
+					We attach the listener in JS rather than relying on a click
+					handler on every child so there are no holes.
+				-->
+				<header class="shrink-0 px-6 pt-4 sm:pt-6 pb-2 flex items-center justify-between">
 					<div class="flex items-center gap-2 text-white/50 text-xs uppercase tracking-[0.25em]">
 						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
 						<span>I 🧡 NY · Caricature Booth</span>
 					</div>
-					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Done · placeholder</span>
+					<!-- Countdown pill -->
+					<div id="done-countdown-pill"
+						class="flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-white/50">
+						<span id="done-countdown-secs" class="tabular-nums font-bold text-white/80">60</span>
+						<span>s to idle</span>
+					</div>
 				</header>
 
-				<section class="flex-1 min-h-0 flex flex-col items-center justify-center px-6 sm:px-8 gap-6">
-					<div class="text-center max-w-md">
-						<h1 class="text-[clamp(2rem,6vw,3rem)] font-bold leading-tight">Your postcard is ready</h1>
-						<p id="done-sub" class="mt-3 text-base text-white/70">Take a screenshot or pick it up from the print queue.</p>
+				<section class="flex-1 min-h-0 flex flex-col sm:flex-row items-stretch gap-4 sm:gap-6 px-4 sm:px-8 pt-2 pb-4 sm:pb-6">
+
+					<!-- Left / top: postcard preview -->
+					<div class="flex-1 min-h-0 flex flex-col items-center justify-center gap-3">
+						<h1 class="text-[clamp(1.5rem,4vw,2.25rem)] font-bold leading-tight text-center">
+							Your postcard is ready! 🎉
+						</h1>
+
+						<figure class="w-full max-w-2xl">
+							<img id="done-postcard" alt="your postcard"
+								class="w-full rounded-2xl border border-white/10 bg-black/40 shadow-[0_0_60px_rgba(246,130,31,0.25)]" />
+							<figcaption id="done-meta" class="mt-2 text-center text-xs text-white/40"></figcaption>
+						</figure>
+
+						<!-- Pick-up banner -->
+						<div class="flex items-center gap-3 rounded-2xl border border-cf-orange/30 bg-cf-orange/10 px-5 py-3 text-sm text-cf-orange font-medium max-w-lg w-full justify-center">
+							<span aria-hidden="true">🖨️</span>
+							Pick up your print at the counter
+						</div>
 					</div>
 
-					<figure class="w-full max-w-xl">
-						<img id="done-postcard" alt="your postcard" class="w-full rounded-2xl border border-white/10 bg-black/40 shadow-[0_0_60px_rgba(246,130,31,0.25)]" />
-						<figcaption id="done-meta" class="mt-3 text-center text-xs text-white/40">loading…</figcaption>
-					</figure>
+					<!-- Right / bottom: QR + actions -->
+					<div class="shrink-0 flex flex-col items-center justify-center gap-4 sm:gap-6 sm:w-52">
+						${qrSrc
+							? `<div class="flex flex-col items-center gap-2">
+								<img src="${qrSrc}" alt="QR code for digital copy"
+									class="w-36 sm:w-48 rounded-2xl border border-white/10 bg-white p-2" />
+								<p class="text-center text-xs text-white/60 max-w-[12rem]">
+									Scan for a digital copy
+								</p>
+							</div>`
+							: `<div class="w-36 sm:w-48 aspect-square rounded-2xl border border-white/10 bg-white/5 flex items-center justify-center text-white/30 text-xs">
+								QR unavailable
+							</div>`}
 
-					<a href="/kiosk" class="inline-flex items-center justify-center rounded-full bg-cf-orange px-12 py-4 text-lg font-bold text-black shadow-[0_0_40px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
-						Start over
-					</a>
-					<p class="text-[11px] uppercase tracking-[0.25em] text-white/30">Real done screen + QR lands in step 6.6</p>
+						<button id="done-restart"
+							class="w-full inline-flex items-center justify-center rounded-full bg-cf-orange px-6 py-3 text-base font-bold text-black shadow-[0_0_30px_rgba(246,130,31,0.4)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
+							Start over
+						</button>
+
+						<p class="text-center text-[11px] uppercase tracking-[0.2em] text-white/30">
+							Tap anywhere to reset the timer
+						</p>
+					</div>
 				</section>
 			</main>
 			<script>
 			(function () {
 				const postcardEl = document.getElementById("done-postcard");
-				const metaEl = document.getElementById("done-meta");
-				const subEl = document.getElementById("done-sub");
+				const metaEl    = document.getElementById("done-meta");
+				const secsEl    = document.getElementById("done-countdown-secs");
+				const restartBtn = document.getElementById("done-restart");
+				const root      = document.getElementById("done-root");
 				const sessionId = ${JSON.stringify(sessionId)};
+				const IDLE_SECS = 60;
 
+				// ---- Resolve artifacts from sessionStorage or fallback ----
 				let payload = null;
 				try {
 					const raw = sessionStorage.getItem("kiosk:done");
@@ -1200,18 +1302,47 @@ app.get("/kiosk/done", (c) => {
 
 				if (payload && payload.postcardKey) {
 					postcardEl.src = "/api/run-img?key=" + encodeURIComponent(payload.postcardKey);
-					metaEl.textContent = (payload.sceneName || payload.sceneId || "scene") + " · session " + (payload.sessionId || "").slice(0, 8) + "…";
+					const scenePart = payload.sceneName || payload.sceneId || "";
+					metaEl.textContent = scenePart ? scenePart + " · " + (payload.sessionId || "").slice(0, 8) + "…" : "";
 				} else if (sessionId) {
-					// No stashed payload but we have a session id (e.g. user
-					// reloaded). Best-effort: try the conventional R2 path.
+					// Fallback: user reloaded or sessionStorage was cleared.
 					postcardEl.src = "/api/run-img?key=" + encodeURIComponent("runs/" + sessionId + "/postcard.jpg");
 					metaEl.textContent = "session " + sessionId.slice(0, 8) + "…";
-					subEl.textContent = "Reloaded from R2. The full session preview lands in 6.6.";
 				} else {
 					postcardEl.classList.add("hidden");
-					metaEl.textContent = "No postcard found — start a new session.";
-					subEl.textContent = "We couldn't find a recent postcard for this device.";
+					metaEl.textContent = "No postcard found — please start over.";
 				}
+
+				// ---- Countdown ----
+				let remaining = IDLE_SECS;
+
+				function resetCountdown() {
+					remaining = IDLE_SECS;
+					secsEl.textContent = String(remaining);
+				}
+
+				function returnToIdle() {
+					try { sessionStorage.removeItem("kiosk:selfie"); } catch (e) {}
+					try { sessionStorage.removeItem("kiosk:done"); } catch (e) {}
+					window.location.href = "/kiosk";
+				}
+
+				// Any interaction anywhere on the screen resets the timer.
+				root.addEventListener("pointerdown", resetCountdown, { passive: true });
+
+				const tick = setInterval(function () {
+					remaining -= 1;
+					secsEl.textContent = String(remaining);
+					if (remaining <= 0) {
+						clearInterval(tick);
+						returnToIdle();
+					}
+				}, 1000);
+
+				restartBtn.addEventListener("click", function () {
+					clearInterval(tick);
+					returnToIdle();
+				});
 			})();
 			</script>`,
 		),
