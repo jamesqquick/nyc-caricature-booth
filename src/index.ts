@@ -3401,7 +3401,7 @@ app.get("/p/:id", async (c) => {
 
 	// ---- UUID: look up the session in D1 ----
 	const row = await c.env.DB.prepare(
-		`SELECT id, status, scene_name, postcard_key, completed_at
+		`SELECT id, status, scene_name, postcard_key, completed_at, email
 		 FROM sessions
 		 WHERE id = ?`,
 	)
@@ -3412,6 +3412,7 @@ app.get("/p/:id", async (c) => {
 			scene_name: string | null;
 			postcard_key: string | null;
 			completed_at: number | null;
+			email: string | null;
 		}>();
 
 	// ---- Not found in D1 ----
@@ -3516,14 +3517,49 @@ app.get("/p/:id", async (c) => {
 						</button>
 					</div>
 
-					<!-- Email opt-in slot (Phase 9.2 lands here) -->
+					<!-- Email opt-in form -->
 					<section id="email-slot"
-						class="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] p-8 text-center">
-						<p class="text-xs uppercase tracking-[0.2em] text-white/40 mb-3">Coming soon</p>
-						<h2 class="text-xl font-semibold text-white/80 mb-2">Get a copy emailed to you</h2>
-						<p class="text-sm text-white/50 max-w-md mx-auto">
-							We're wiring up email delivery so you can save your postcard for later. Check back during the event.
-						</p>
+						class="rounded-2xl border border-white/10 bg-white/[0.03] p-6 sm:p-8">
+						${row.email
+							? `<!-- Already submitted -->
+								<div class="flex flex-col items-center gap-2 text-center">
+									<div class="flex items-center gap-2 text-cf-orange text-sm font-medium">
+										<svg class="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+											<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+										</svg>
+										<span>Email saved</span>
+									</div>
+									<p class="text-white/50 text-sm">
+										We'll send your postcard to <span class="text-white/80 font-medium">${row.email}</span> once email delivery is wired up.
+									</p>
+								</div>`
+							: `<!-- Email form -->
+								<div class="text-center mb-4">
+									<h2 class="text-lg font-semibold text-white/90 mb-1">Get a digital copy emailed to you</h2>
+									<p class="text-sm text-white/50">We'll send your high-res postcard — no spam, just the one email.</p>
+								</div>
+								<form id="email-form" class="flex flex-col sm:flex-row gap-3 max-w-lg mx-auto">
+									<input id="email-input" type="email" name="email" required
+										placeholder="you@example.com"
+										autocomplete="email" autocapitalize="none" inputmode="email"
+										class="flex-1 rounded-full bg-white/10 border border-white/15 px-5 py-3 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-cf-orange focus:ring-1 focus:ring-cf-orange/50" />
+									<button id="email-submit" type="submit"
+										class="inline-flex items-center justify-center gap-2 rounded-full bg-cf-orange px-6 py-3 text-sm font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
+										<span data-label="idle">Send me a copy</span>
+										<span data-label="loading" class="hidden items-center gap-2">
+											<svg class="size-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+												<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.3" stroke-width="3" />
+												<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+											</svg>
+											<span>Saving…</span>
+										</span>
+										<span data-label="done" class="hidden items-center gap-2">
+											<span>✓ Saved</span>
+										</span>
+									</button>
+								</form>
+								<p id="email-error" class="hidden text-sm text-red-400 text-center mt-2"></p>
+								<p id="email-success" class="hidden text-sm text-cf-orange text-center mt-3"></p>`}
 					</section>
 
 					<!-- Footer -->
@@ -3537,33 +3573,147 @@ app.get("/p/:id", async (c) => {
 
 			<script>
 			(function () {
+				// ---- Share button ----
 				var btn = document.getElementById("share-btn");
 				var label = document.getElementById("share-label");
-				if (!btn || !label) return;
-				var url = ${JSON.stringify(pickupUrl)};
-				var title = ${JSON.stringify(`My ${sceneName} caricature postcard`)};
+				if (btn && label) {
+					var url = ${JSON.stringify(pickupUrl)};
+					var title = ${JSON.stringify(`My ${sceneName} caricature postcard`)};
 
-				btn.addEventListener("click", function () {
-					// Prefer the native share sheet on mobile/iPad.
-					if (navigator.share) {
-						navigator.share({ title: title, url: url }).catch(function () {});
-						return;
-					}
-					// Fallback: copy to clipboard.
-					if (navigator.clipboard && navigator.clipboard.writeText) {
-						navigator.clipboard.writeText(url).then(function () {
-							var prev = label.textContent;
-							label.textContent = "Copied!";
-							setTimeout(function () { label.textContent = prev; }, 1800);
-						}).catch(function () {
-							label.textContent = "Press \u2318+C to copy";
+					btn.addEventListener("click", function () {
+						if (navigator.share) {
+							navigator.share({ title: title, url: url }).catch(function () {});
+							return;
+						}
+						if (navigator.clipboard && navigator.clipboard.writeText) {
+							navigator.clipboard.writeText(url).then(function () {
+								var prev = label.textContent;
+								label.textContent = "Copied!";
+								setTimeout(function () { label.textContent = prev; }, 1800);
+							}).catch(function () {
+								label.textContent = "Press \u2318+C to copy";
+							});
+						}
+					});
+				}
+
+				// ---- Email opt-in form ----
+				var emailForm = document.getElementById("email-form");
+				if (emailForm) {
+					var emailInput = document.getElementById("email-input");
+					var emailBtn   = document.getElementById("email-submit");
+					var emailError = document.getElementById("email-error");
+					var emailOk    = document.getElementById("email-success");
+					var sessionId  = ${JSON.stringify(id)};
+
+					function setEmailState(state) {
+						var labels = emailBtn.querySelectorAll("[data-label]");
+						labels.forEach(function (el) {
+							var match = el.getAttribute("data-label") === state;
+							el.classList.toggle("hidden", !match);
+							el.classList.toggle("inline-flex", match);
 						});
 					}
-				});
+
+					emailForm.addEventListener("submit", async function (e) {
+						e.preventDefault();
+						var email = (emailInput.value || "").trim().toLowerCase();
+						if (!email) return;
+
+						emailError.classList.add("hidden");
+						emailOk.classList.add("hidden");
+						emailBtn.disabled = true;
+						emailInput.disabled = true;
+						setEmailState("loading");
+
+						try {
+							var res = await fetch("/api/p/" + encodeURIComponent(sessionId) + "/email", {
+								method: "POST",
+								headers: { "content-type": "application/json" },
+								body: JSON.stringify({ email: email }),
+							});
+							var data = await res.json().catch(function () { return {}; });
+							if (!res.ok || !data.ok) {
+								throw new Error(data.error || "request failed (" + res.status + ")");
+							}
+							setEmailState("done");
+							emailOk.textContent = "We'll send your postcard to " + email;
+							emailOk.classList.remove("hidden");
+							// Keep input disabled — they submitted successfully.
+						} catch (err) {
+							console.warn("email submit failed:", err);
+							setEmailState("idle");
+							emailBtn.disabled = false;
+							emailInput.disabled = false;
+							emailError.textContent = err.message || "Something went wrong. Try again.";
+							emailError.classList.remove("hidden");
+						}
+					});
+				}
 			})();
 			</script>`,
 		),
 	);
+});
+
+/**
+ * Saves the attendee's email for a completed session so a digital copy
+ * can be emailed later (step 9.3). Validates the session exists + is
+ * completed and the email looks reasonable (no full RFC 5322 — just
+ * "something@something.something").
+ *
+ * Idempotent: re-submitting overwrites the email (attendees may typo
+ * their address and resubmit).
+ *
+ * POST /api/p/:id/email  body: { email }
+ */
+app.post("/api/p/:id/email", async (c) => {
+	const id = c.req.param("id");
+	if (!UUID_RE.test(id)) {
+		return c.json({ error: "invalid session id" }, 400);
+	}
+
+	let body: { email?: unknown };
+	try {
+		body = await c.req.json();
+	} catch (err) {
+		return c.json({ error: "expected JSON body { email }", details: String(err) }, 400);
+	}
+
+	const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+	// Minimal email validation — we're not going to RFC-5322 this, but
+	// we do want to catch obvious garbage before it hits D1.
+	if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+		return c.json({ error: "invalid email address" }, 400);
+	}
+	if (email.length > 320) {
+		return c.json({ error: "email address too long" }, 400);
+	}
+
+	// Verify the session is completed. No point in storing email for a
+	// session that never produced a postcard.
+	const session = await c.env.DB.prepare(
+		"SELECT id, status, postcard_key FROM sessions WHERE id = ?",
+	)
+		.bind(id)
+		.first<{ id: string; status: string | null; postcard_key: string | null }>();
+
+	if (!session) {
+		return c.json({ error: "session not found" }, 404);
+	}
+	if (session.status !== "completed" || !session.postcard_key) {
+		return c.json({ error: "session is not completed" }, 409);
+	}
+
+	await c.env.DB.prepare(
+		"UPDATE sessions SET email = ?, email_submitted_at = unixepoch() WHERE id = ?",
+	)
+		.bind(email, id)
+		.run();
+
+	console.log(`[email-optin] session=${id} email=${email.slice(0, 3)}***`);
+
+	return c.json({ ok: true, email });
 });
 
 /**
