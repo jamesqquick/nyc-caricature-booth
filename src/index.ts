@@ -92,11 +92,11 @@ app.get("/", (c) => {
 				</p>
 				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
 					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Step 6.2 &middot; Kiosk camera capture
+					Step 6.3 &middot; Kiosk scene picker
 				</div>
 				<div class="mt-6 flex flex-col items-center gap-2">
 					<a href="/kiosk" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						📱 Kiosk: idle → capture → scene placeholder (step 6.2) →
+						📱 Kiosk: idle → capture → scene → review placeholder (step 6.3) →
 					</a>
 					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
 						⚡ Full pipeline + live Session DO (step 5.4)
@@ -132,7 +132,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "6.2" });
+	return c.json({ status: "ok", step: "6.3" });
 });
 
 // ---------------------------------------------------------------------------
@@ -476,33 +476,155 @@ app.get("/kiosk/capture", (c) => {
 });
 
 /**
- * Scene picker placeholder (step 6.3 will replace this).
- * For now it just reads the sessionStorage handoff so we can verify the
- * upload + handoff worked end-to-end.
+ * Scene picker (step 6.3).
+ *
+ * Renders the 6 NYC scenes from KV (via loadScenes) as a 2×3 tappable grid.
+ * Reads { sessionId, selfieKey, ... } out of sessionStorage; if absent we
+ * bounce back to /kiosk/capture (someone landed here directly). On tap we
+ * merge { sceneId, sceneName } into the same kiosk:selfie payload and
+ * navigate to /kiosk/review.
+ *
+ * Scenes are rendered server-side so the grid is interactive on first paint
+ * — no client fetch round trip on the iPad.
  * GET /kiosk/scene
  */
-app.get("/kiosk/scene", (c) => {
+app.get("/kiosk/scene", async (c) => {
+	let scenes: Scene[];
+	try {
+		scenes = await loadScenes(c.env);
+	} catch (err) {
+		console.error("loadScenes failed:", err);
+		return c.html(
+			kioskPage(
+				"Pick a scene",
+				`<main class="min-h-[100dvh] w-full flex flex-col items-center justify-center px-8 text-center">
+					<div class="text-2xl font-semibold text-red-300">Scenes unavailable</div>
+					<p class="mt-3 text-sm text-white/60 max-w-md">${String(err)}</p>
+					<a href="/kiosk" class="mt-8 text-sm text-white/60 hover:text-white underline">← Back to start</a>
+				</main>`,
+			),
+			500,
+		);
+	}
+
+	const cards = scenes
+		.map(
+			(s, idx) => `<button type="button" data-scene-id="${s.id}" data-scene-name="${s.name.replace(/"/g, "&quot;")}"
+				class="scene-card group relative flex flex-col items-start text-left rounded-3xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/30 active:scale-[0.98] transition p-4 sm:p-5 focus:outline-none focus-visible:ring-2 focus-visible:ring-cf-orange disabled:opacity-50 disabled:cursor-not-allowed"
+				style="animation-delay: ${idx * 40}ms;">
+				<div class="text-4xl sm:text-5xl leading-none mb-2 sm:mb-3" aria-hidden="true">${s.emoji}</div>
+				<div class="text-base sm:text-lg font-semibold leading-tight">${s.name}</div>
+				<div class="mt-1 text-xs sm:text-sm text-white/60 leading-snug line-clamp-2">${s.description}</div>
+			</button>`,
+		)
+		.join("\n");
+
 	return c.html(
 		kioskPage(
-			"Pick a scene — coming in 6.3",
-			`<main class="h-full w-full flex flex-col">
-				<header class="px-8 pt-8 pb-2 flex items-center justify-between">
-					<a href="/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
-					<span class="text-xs uppercase tracking-[0.25em] text-white/40">Step 2 of 3 · Scene</span>
-					<span class="w-12"></span>
+			"Pick a scene",
+			`<main id="scene-root" class="min-h-[100dvh] w-full flex flex-col">
+				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
+					<a href="/kiosk/capture" class="text-sm text-white/50 hover:text-white">← Retake selfie</a>
+					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 2 of 3 · Scene</span>
+					<span class="w-24"></span>
 				</header>
-				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
-					<div class="text-[clamp(2rem,7vw,4rem)] font-bold leading-tight">Scene picker</div>
-					<p class="mt-4 max-w-md text-lg text-white/70">
-						Placeholder for step 6.3. Below is the handoff payload from the capture screen
-						(stored in sessionStorage).
+
+				<section class="flex-1 min-h-0 flex flex-col items-center px-4 sm:px-6 pt-2 pb-4 gap-4 sm:gap-6">
+					<div class="text-center max-w-md">
+						<h1 class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Pick your NYC scene</h1>
+						<p class="mt-2 text-sm sm:text-base text-white/60">
+							Tap a scene to drop yourself into it.
+						</p>
+					</div>
+
+					<!--
+						2x3 grid in portrait. max-w-2xl keeps the cards from getting
+						too wide on landscape desktop while still filling the iPad
+						portrait viewport.
+					-->
+					<div id="scene-grid" class="w-full max-w-2xl grid grid-cols-2 gap-3 sm:gap-4">
+						${cards}
+					</div>
+
+					<p id="scene-status" class="text-center text-[11px] sm:text-xs text-white/40 min-h-[1rem]"></p>
+				</section>
+			</main>
+			<script>
+			(function () {
+				const grid = document.getElementById("scene-grid");
+				const statusEl = document.getElementById("scene-status");
+
+				// Guard: this screen requires a selfie handoff. If sessionStorage
+				// is empty the user landed here directly (page refresh, deep link,
+				// etc.) — bounce them back to capture.
+				const raw = sessionStorage.getItem("kiosk:selfie");
+				if (!raw) {
+					window.location.replace("/kiosk/capture");
+					return;
+				}
+				let selfie;
+				try {
+					selfie = JSON.parse(raw);
+					if (!selfie || !selfie.sessionId || !selfie.selfieKey) throw new Error("incomplete payload");
+				} catch (err) {
+					console.error("bad kiosk:selfie payload:", err);
+					sessionStorage.removeItem("kiosk:selfie");
+					window.location.replace("/kiosk/capture");
+					return;
+				}
+
+				function lockGrid() {
+					for (const btn of grid.querySelectorAll(".scene-card")) {
+						btn.disabled = true;
+					}
+				}
+
+				grid.addEventListener("click", function (e) {
+					const card = e.target.closest(".scene-card");
+					if (!card || card.disabled) return;
+					const sceneId = card.getAttribute("data-scene-id");
+					const sceneName = card.getAttribute("data-scene-name");
+					if (!sceneId) return;
+					lockGrid();
+					card.classList.add("ring-2", "ring-cf-orange");
+					statusEl.textContent = "Loading " + sceneName + "…";
+					sessionStorage.setItem("kiosk:selfie", JSON.stringify(Object.assign({}, selfie, {
+						sceneId: sceneId,
+						sceneName: sceneName,
+						sceneChosenAt: Date.now(),
+					})));
+					window.location.href = "/kiosk/review";
+				});
+			})();
+			</script>`,
+		),
+	);
+});
+
+/**
+ * Review placeholder (step 6.4 will replace this with the workflow trigger).
+ * For now it just renders the full sessionStorage handoff so we can verify
+ * the scene tap round-tripped correctly.
+ * GET /kiosk/review
+ */
+app.get("/kiosk/review", (c) => {
+	return c.html(
+		kioskPage(
+			"Review — coming in 6.4",
+			`<main class="min-h-[100dvh] w-full flex flex-col">
+				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
+					<a href="/kiosk/scene" class="text-sm text-white/50 hover:text-white">← Pick different scene</a>
+					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 3 of 3 · Review</span>
+					<span class="w-32"></span>
+				</header>
+				<section class="flex-1 flex flex-col items-center justify-center px-6 sm:px-8 text-center">
+					<div class="text-[clamp(1.75rem,6vw,3rem)] font-bold leading-tight">Review</div>
+					<p class="mt-3 max-w-md text-base text-white/70">
+						Placeholder for step 6.4 (kiosk → workflow trigger). Below is the handoff
+						payload from the scene picker (stored in sessionStorage).
 					</p>
-					<pre id="handoff" class="mt-8 max-w-md w-full text-left bg-black/40 border border-white/10 rounded-2xl p-4 text-xs text-white/70 whitespace-pre-wrap break-words">loading…</pre>
-					<img id="preview" alt="" class="mt-6 max-h-64 rounded-2xl border border-white/10 hidden" />
-					<a href="/kiosk/capture"
-						class="mt-12 inline-flex items-center justify-center rounded-full border border-white/30 px-10 py-4 text-base text-white/80 hover:border-white/60 hover:text-white active:scale-[0.98] transition">
-						← Retake selfie
-					</a>
+					<pre id="handoff" class="mt-6 max-w-md w-full text-left bg-black/40 border border-white/10 rounded-2xl p-4 text-xs text-white/70 whitespace-pre-wrap break-words">loading…</pre>
+					<img id="preview" alt="" class="mt-6 max-h-56 rounded-2xl border border-white/10 hidden" />
 				</section>
 			</main>
 			<script>
@@ -517,7 +639,6 @@ app.get("/kiosk/scene", (c) => {
 				try {
 					const data = JSON.parse(raw);
 					handoffEl.textContent = JSON.stringify(data, null, 2);
-					// 6.2 verification: prove the uploaded selfie is readable from R2.
 					if (data.selfieKey) {
 						previewEl.src = "/api/run-img?key=" + encodeURIComponent(data.selfieKey);
 						previewEl.classList.remove("hidden");
