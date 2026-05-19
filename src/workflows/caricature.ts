@@ -54,18 +54,6 @@ export type StoreStepOutput = {
 };
 
 /**
- * Message sent to PRINT_QUEUE after a postcard is stored.
- * The print agent pulls these via the HTTP API and prints them.
- */
-export type PrintJobMessage = {
-	sessionId: string;
-	postcardKey: string;
-	postcardUrl: string;
-	sceneName: string;
-	enqueuedAt: string;
-};
-
-/**
  * Caricature pipeline.
  *
  * Step 4.1: bare skeleton (hello).
@@ -266,22 +254,26 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					timeout: "30 seconds",
 				},
 				async () => {
-					const result = await this.env.DB.prepare(
-						`INSERT INTO sessions
-							(id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
-						 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
-						 ON CONFLICT(id) DO UPDATE SET
-							status='completed',
-							scene_id=excluded.scene_id,
-							scene_name=excluded.scene_name,
-							selfie_key=excluded.selfie_key,
-							caricature_key=excluded.caricature_key,
-							postcard_key=excluded.postcard_key,
-							workflow_instance_id=excluded.workflow_instance_id,
-							completed_at=excluded.completed_at,
-							error_msg=NULL`,
-					)
-						.bind(
+					const origin = publicOrigin?.replace(/\/$/, "") ?? "";
+					const postcardUrl = `${origin}/p/${sessionId}`;
+
+					// Batch: write session + print job in one D1 round trip
+					const [sessionResult] = await this.env.DB.batch([
+						this.env.DB.prepare(
+							`INSERT INTO sessions
+								(id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
+							 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
+							 ON CONFLICT(id) DO UPDATE SET
+								status='completed',
+								scene_id=excluded.scene_id,
+								scene_name=excluded.scene_name,
+								selfie_key=excluded.selfie_key,
+								caricature_key=excluded.caricature_key,
+								postcard_key=excluded.postcard_key,
+								workflow_instance_id=excluded.workflow_instance_id,
+								completed_at=excluded.completed_at,
+								error_msg=NULL`,
+						).bind(
 							sessionId,
 							generate.sceneId,
 							generate.sceneName,
@@ -289,27 +281,26 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							generate.caricatureKey,
 							composite.postcardKey,
 							instanceId,
-						)
-						.run();
+						),
+						this.env.DB.prepare(
+							`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
+							 VALUES (?, ?, ?, ?)`,
+						).bind(
+							sessionId,
+							composite.postcardKey,
+							postcardUrl,
+							generate.sceneName,
+						),
+					]);
 
-					const rowsWritten = result.meta.changes ?? 0;
+					const rowsWritten = (sessionResult.meta.changes ?? 0);
 					console.log(
-						`[caricature-workflow] store session=${sessionId} rowsWritten=${rowsWritten}`,
+						`[caricature-workflow] store session=${sessionId} rowsWritten=${rowsWritten} printJob=queued`,
 					);
 
 					return { sessionId, rowsWritten };
 				},
 			);
-
-			// Enqueue a print job for the local print agent. Best-effort —
-			// a queue failure must not block the workflow or the UX.
-			await this.enqueuePrintJob({
-				sessionId,
-				postcardKey: composite.postcardKey,
-				postcardUrl: composite.postcardUrl,
-				sceneName: generate.sceneName,
-				enqueuedAt: new Date().toISOString(),
-			});
 
 			// Terminal: push the full set of artifact keys into the DO so any
 			// final WS frame contains everything a client needs to render the
@@ -360,19 +351,4 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 		}
 	}
 
-	// -------- Print Queue helper --------
-
-	private async enqueuePrintJob(job: PrintJobMessage): Promise<void> {
-		try {
-			await this.env.PRINT_QUEUE.send(job);
-			console.log(
-				`[caricature-workflow] enqueued print job session=${job.sessionId}`,
-			);
-		} catch (err) {
-			// Best-effort: print queue failures must not break the workflow.
-			console.warn(
-				`[caricature-workflow] enqueuePrintJob failed session=${job.sessionId}: ${String(err)}`,
-			);
-		}
-	}
 }

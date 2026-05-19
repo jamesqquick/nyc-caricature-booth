@@ -20,20 +20,18 @@ A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026
 
 ---
 
-## Current status — Phase 7 complete ✅
+## Current status — Phase 8 in progress (steps 8.1–8.3 complete)
 
 Most recent commits:
 ```
-0ab772f feat: branding pass — shimmer, glow, QR, CF badge (step 7.3)
-5242b05 feat: /api/display/feed + 30s polling on /display (step 7.2)
-3ce31b7 feat: big screen gallery route /display (step 7.1)
-3e44960 docs: update HANDOFF for Phase 6 completion + Phase 7 plan
-dadeb09 fix: remove QR from printed postcard composite step
-175c061 fix: QR unavailable + layout on /kiosk/done
-d76685b feat: kiosk done screen + QR endpoint (step 6.6 — Phase 6 complete)
+<TBD>    refactor: pivot print queue from CF Queue to D1 + Worker endpoints (step 8.3 revised)
+d39a580  feat: workflow enqueues print job after store step (step 8.2)
+e28943e  feat: add PRINT_QUEUE binding + HTTP pull consumer (step 8.1)
+6d74111  docs: update HANDOFF for Phase 7 completion
+0ab772f  feat: branding pass — shimmer, glow, QR, CF badge (step 7.3)
 ```
 
-**Next up:** Phase 8 — Print Queue + Agent.
+**Next up:** Phase 8.4 — Agent downloads postcard + writes PDF.
 
 ### Phase 6 — complete kiosk flow
 
@@ -111,13 +109,14 @@ Hibernation API so it can be evicted between events while sockets stay open.
 | Config | KV (scene prompts) | `env.CONFIG` |
 | Static assets | Workers static assets | `env.ASSETS` |
 | Email | Cloudflare Email Workers (not yet wired) | tbd |
-| Print | Cloudflare Queue + local Node agent on Mac mini (poll-based, not booth-DO based) | not built yet |
+| Print | D1 `print_jobs` table + local Node agent on Mac mini (polls Worker endpoints) | `env.DB` (shared) |
 
 Resource IDs:
 - D1: `nyc-booth-db` (`60a8fb4e-c023-4554-af74-4e2e0eb22565`)
 - R2: `nyc-booth-images`
 - KV: `nyc-booth-config` (`eb40539962954422a9b409c91b1ee2f9`)
 - Workflow class: `CaricatureWorkflow`
+- Queue: `nyc-booth-print-queue` (`f1be5951c31248e29770dc4d5498cdbc`) — created but dormant; pivoted to D1-based print jobs
 
 ---
 
@@ -149,6 +148,14 @@ nyc-caricature-booth/
 ├── migrations/
 │   ├── 0001_initial.sql      # sessions table
 │   └── 0002_workflow_columns.sql  # adds scene_id, caricature_key, postcard_key, …
+├── print-agent/              # standalone Node agent (runs on Mac mini at booth)
+│   ├── src/
+│   │   ├── index.ts          # poll loop + job handler entry point
+│   │   ├── queue.ts          # HTTP pull/ack against Cloudflare Queue API
+│   │   └── types.ts          # PrintJobMessage, QueueMessage, AgentConfig
+│   ├── .env.example          # credentials template
+│   ├── package.json          # tsx runner, separate from root
+│   └── tsconfig.json         # Node-oriented TS config
 ├── wrangler.jsonc            # all bindings + workflow + DO config
 ├── package.json              # scripts: dev / build:css / deploy
 ├── .npmrc                    # overrides @cloudflare scope back to npmjs.org
@@ -186,6 +193,10 @@ npx wrangler d1 migrations apply nyc-booth-db --remote
 
 # Seed scenes into KV
 npx wrangler kv key put --binding=CONFIG --remote scenes --path=seed/scenes.json
+
+# Print agent (run from print-agent/ directory)
+cd print-agent && cp .env.example .env  # defaults work out of the box
+npm install && npm start
 ```
 
 ---
@@ -245,6 +256,10 @@ npx wrangler kv key put --binding=CONFIG --remote scenes --path=seed/scenes.json
 - `GET /api/test-db` — inserts a session row, returns 5 most recent
 - `GET /api/scenes` — returns 6 scenes from KV
 
+### Print agent (polled by Mac mini)
+- `GET /api/print-agent/jobs?limit=5` — returns pending print jobs from D1
+- `POST /api/print-agent/jobs/:id/ack` — mark a job `printed` or `failed`
+
 All test endpoints stay in place during development — they'll be cleaned up before launch.
 
 ---
@@ -272,6 +287,9 @@ All test endpoints stay in place during development — they'll be cleaned up be
 19. **`state.sessionId` from the SessionDO can be `"(unset)"`** if the DO seeds itself via `ensureState` before the workflow's first `markStep` call. Always prefer the server-injected `sessionId` from the `?session=` query param (confirmed UUID) over `state.sessionId` from the WS frame when building redirect URLs or stashing to sessionStorage. This was the root cause of the QR-unavailable bug on `/kiosk/done`.
 20. **Printed postcard has no QR baked in** (removed in step 6.6). The QR for digital pickup lives only on the `/kiosk/done` screen (header, top-right, points to `/p/:sessionId`). The `/test-postcard` dev endpoint still passes `qrUrl` to `buildPostcard` so the QR feature is still testable.
 21. **`/api/kiosk/qr` is origin-locked.** The `url` param must start with the Worker's own origin or the endpoint returns 403. This prevents it being used as an open QR-code proxy.
+22. **Print jobs use D1, not Cloudflare Queues.** A Queue was created in step 8.1 but we pivoted to D1-based `print_jobs` because: (a) the Mac mini agent is external and would need an API token to use the Queue HTTP pull API, (b) for a single-booth activation the Queue adds complexity without benefit, (c) D1 gives a persistent audit log for the admin dashboard. The Queue (`nyc-booth-print-queue`) still exists but is dormant — no producer binding, nothing writes to it.
+23. **The workflow's `store` step batches two D1 writes** — the session upsert and the print_jobs insert run in a single `DB.batch()` call. If either fails, the step retries both (idempotent via `ON CONFLICT` on sessions; print_jobs gets a new row on retry, but the agent handles duplicates by session_id).
+24. **Print agent endpoints are unauthenticated.** `/api/print-agent/jobs` and `/api/print-agent/jobs/:id/ack` have no auth gate. This is acceptable for an event activation on a private network, but should be locked down before any public deployment (Phase 10 auth gate will cover this).
 
 ---
 
@@ -324,9 +342,9 @@ All test endpoints stay in place during development — they'll be cleaned up be
 - 7.3 ✅ Idle animation / branding pass
 
 ### Phase 8 — Print Queue + Agent
-- 8.1 Cloudflare Queue binding (`PRINT_QUEUE`)
-- 8.2 Workflow enqueues a print job after store
-- 8.3 Print agent skeleton (Node script polling the queue)
+- 8.1 ✅ ~~Cloudflare Queue binding~~ (created but pivoted to D1)
+- 8.2 ✅ Workflow writes `print_jobs` row in D1 (batched with session insert)
+- 8.3 ✅ Print agent skeleton (Node script polling Worker endpoints)
 - 8.4 Agent downloads postcard + writes PDF
 - 8.5 Mock printer driver
 - 8.6 Real printer integration (printer model TBD)

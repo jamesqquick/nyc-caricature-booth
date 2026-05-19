@@ -1,0 +1,16 @@
+{
+	"name": "nyc-booth-print-agent",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "tsx src/index.ts",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"tsx": "^4.19.0"
+	},
+	"devDependencies": {
+		"typescript": "^5.5.2"
+	}
+}

@@ -133,7 +133,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "8.2" });
+	return c.json({ status: "ok", step: "8.3-d1" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1538,6 +1538,64 @@ app.get("/api/display/feed", async (c) => {
 			completedAt: r.completed_at,
 		})),
 	});
+});
+
+// ---------------------------------------------------------------------------
+// Print agent endpoints — polled by the Mac mini print agent
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns pending print jobs for the agent to process.
+ * GET /api/print-agent/jobs?limit=5
+ */
+app.get("/api/print-agent/jobs", async (c) => {
+	const limit = Math.min(Number(c.req.query("limit")) || 5, 20);
+	const { results } = await c.env.DB.prepare(
+		`SELECT id, session_id, postcard_key, postcard_url, scene_name, created_at
+		 FROM print_jobs
+		 WHERE status = 'pending'
+		 ORDER BY created_at ASC
+		 LIMIT ?`,
+	)
+		.bind(limit)
+		.all<{
+			id: string;
+			session_id: string;
+			postcard_key: string;
+			postcard_url: string;
+			scene_name: string;
+			created_at: number;
+		}>();
+
+	return c.json({ jobs: results });
+});
+
+/**
+ * Acknowledge a print job (mark it printed or failed).
+ * POST /api/print-agent/jobs/:id/ack
+ * Body: { "status": "printed" } or { "status": "failed", "error": "reason" }
+ */
+app.post("/api/print-agent/jobs/:id/ack", async (c) => {
+	const jobId = c.req.param("id");
+	const body = await c.req.json<{ status: "printed" | "failed"; error?: string }>();
+
+	if (body.status !== "printed" && body.status !== "failed") {
+		return c.json({ error: "status must be 'printed' or 'failed'" }, 400);
+	}
+
+	const result = await c.env.DB.prepare(
+		`UPDATE print_jobs
+		 SET status = ?, printed_at = CASE WHEN ? = 'printed' THEN unixepoch() ELSE NULL END, error_msg = ?
+		 WHERE id = ? AND status IN ('pending', 'printing')`,
+	)
+		.bind(body.status, body.status, body.error ?? null, jobId)
+		.run();
+
+	if ((result.meta.changes ?? 0) === 0) {
+		return c.json({ error: "job not found or already acked" }, 404);
+	}
+
+	return c.json({ ok: true, jobId, status: body.status });
 });
 
 /**
@@ -3067,22 +3125,6 @@ app.get("/api/test-db", async (c) => {
 		inserted,
 		recent: recent.results,
 	});
-});
-
-/**
- * Test endpoint: sends a test message to the PRINT_QUEUE.
- * GET /api/test-print-queue
- */
-app.get("/api/test-print-queue", async (c) => {
-	const testJob = {
-		sessionId: crypto.randomUUID(),
-		postcardKey: "test/postcard.jpg",
-		postcardUrl: "https://nyc-caricature-booth.examples.workers.dev/p/test",
-		sceneName: "Test Scene",
-		enqueuedAt: new Date().toISOString(),
-	};
-	await c.env.PRINT_QUEUE.send(testJob);
-	return c.json({ ok: true, sent: testJob });
 });
 
 /**
