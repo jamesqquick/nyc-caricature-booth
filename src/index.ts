@@ -202,16 +202,14 @@ function adminPrintClass(s: string | null): string {
 	return "bg-white/5 text-white/40 ring-white/10";
 }
 
-function adminFmtTs(secs: number | null): string {
-	if (!secs) return "—";
-	// Use UTC for the server paint so the markup is deterministic; the client
-	// JS will re-render with the viewer's locale on first poll.
-	const d = new Date(secs * 1000);
-	const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-	const day = d.getUTCDate();
-	const hours = String(d.getUTCHours()).padStart(2, "0");
-	const minutes = String(d.getUTCMinutes()).padStart(2, "0");
-	return `${month} ${day}, ${hours}:${minutes} UTC`;
+/**
+ * Server-side, we emit a <time data-ts="<unix-seconds>"> placeholder and
+ * let the client JS format it in the viewer's locale on load. This avoids
+ * the "flips from UTC 24h to local AM/PM after the first poll" bug.
+ */
+function adminTimeTag(secs: number | null): string {
+	if (!secs) return `<span class="text-white/40">—</span>`;
+	return `<time data-ts="${secs}" class="whitespace-nowrap">…</time>`;
 }
 
 function adminFmtDuration(ms: number | null): string {
@@ -290,7 +288,7 @@ function renderAdminTableBody(rows: AdminSessionRow[]): string {
 				`<td class="px-4 py-3 font-mono text-xs text-white/80">${escapeHtml(shortId)}</td>` +
 				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminStatusClass(status)}">${escapeHtml(status)}</span></td>` +
 				`<td class="px-4 py-3 text-white/80">${escapeHtml(r.sceneName ?? "—")}</td>` +
-				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${escapeHtml(adminFmtTs(r.createdAt))}</td>` +
+				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${adminTimeTag(r.createdAt)}</td>` +
 				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${escapeHtml(adminFmtDuration(r.pipelineDurationMs))}</td>` +
 				`<td class="px-4 py-3 text-white/60">${escapeHtml(r.emailMasked ?? "—")}</td>` +
 				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminPrintClass(r.printStatus)}">${escapeHtml(printStatus)}</span></td>` +
@@ -564,11 +562,23 @@ app.get("/admin", async (c) => {
 
 				function fmtTs(secs) {
 					if (!secs) return "—";
-					var d = new Date(secs * 1000);
+					var d = new Date(Number(secs) * 1000);
 					return d.toLocaleString(undefined, {
 						month: "short", day: "numeric",
 						hour: "numeric", minute: "2-digit",
 					});
+				}
+
+				// Format every <time data-ts="..."> on the page in the viewer's locale.
+				// Called once on initial load (server emits placeholders) and again
+				// after each poll re-render.
+				function formatTimes() {
+					var nodes = document.querySelectorAll("time[data-ts]");
+					for (var i = 0; i < nodes.length; i++) {
+						var n = nodes[i];
+						var secs = Number(n.getAttribute("data-ts"));
+						if (secs > 0) n.textContent = fmtTs(secs);
+					}
 				}
 
 				function fmtDuration(ms) {
@@ -600,6 +610,11 @@ app.get("/admin", async (c) => {
 					return '<div class="inline-flex items-center gap-1.5 justify-end">' + buttons.join("") + '</div>';
 				}
 
+				function renderTimeTag(secs) {
+					if (!secs) return '<span class="text-white/40">—</span>';
+					return '<time data-ts="' + Number(secs) + '" class="whitespace-nowrap">' + escapeHtml(fmtTs(secs)) + '</time>';
+				}
+
 				function renderRow(r) {
 					var shortId = (r.sessionId || "").slice(0, 8);
 					var status = r.status || "pending";
@@ -609,7 +624,7 @@ app.get("/admin", async (c) => {
 						+ '<td class="px-4 py-3 font-mono text-xs text-white/80">' + escapeHtml(shortId) + '</td>'
 						+ '<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ' + statusClass(status) + '">' + escapeHtml(status) + '</span></td>'
 						+ '<td class="px-4 py-3 text-white/80">' + escapeHtml(r.sceneName || "—") + '</td>'
-						+ '<td class="px-4 py-3 text-white/60 whitespace-nowrap">' + escapeHtml(fmtTs(r.createdAt)) + '</td>'
+						+ '<td class="px-4 py-3 text-white/60 whitespace-nowrap">' + renderTimeTag(r.createdAt) + '</td>'
 						+ '<td class="px-4 py-3 text-white/60 whitespace-nowrap">' + escapeHtml(fmtDuration(r.pipelineDurationMs)) + '</td>'
 						+ '<td class="px-4 py-3 text-white/60">' + escapeHtml(r.emailMasked || "—") + '</td>'
 						+ '<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ' + printClass(r.printStatus) + '">' + escapeHtml(printStatus) + '</span></td>'
@@ -670,6 +685,7 @@ app.get("/admin", async (c) => {
 				function render(snapshot) {
 					renderSessions(snapshot.sessions || []);
 					if (snapshot.stats) renderStats(snapshot.stats);
+					formatTimes();
 					lastUpdated.textContent = "Updated " + new Date().toLocaleTimeString();
 				}
 
@@ -784,7 +800,11 @@ app.get("/admin", async (c) => {
 						});
 				});
 
-				// Initial paint is server-rendered; first client refresh fires after 10s.
+				// Initial paint is server-rendered; format the timestamp placeholders
+				// in the viewer's locale right away so they don't show "…" for 10s.
+				formatTimes();
+
+				// First client refresh fires after 10s.
 				setInterval(poll, 10000);
 			})();
 			</script>`,
