@@ -75,11 +75,16 @@ state — just a slow-refresh view of recent postcards.
 ### Phase 8 — print queue + agent ✅
 
 The print system uses D1 as the job queue (pivoted from Cloudflare Queues —
-see gotcha #22). The workflow's `store` step batches both the session upsert
-and a `print_jobs` INSERT in a single `DB.batch()` call.
+see gotcha #22). **Printing is opt-in:** the workflow's `store` step writes
+only the session upsert; print jobs are enqueued by `POST /api/kiosk/print`
+when the attendee taps "Print my postcard" on `/kiosk/done` (see gotcha #25).
 
 - **Worker endpoints:** `GET /api/print-agent/jobs` (pending jobs) +
   `POST /api/print-agent/jobs/:id/ack` (mark printed/failed)
+- **User-initiated enqueue:** `POST /api/kiosk/print` validates the session
+  is completed + has a postcard and inserts a `print_jobs` row. Idempotent:
+  existing pending/printing/printed jobs return `alreadyQueued` without
+  re-inserting; only `failed` jobs are considered re-queuable.
 - **Print agent:** standalone Node/tsx script in `print-agent/`. Polls the
   Worker, downloads the postcard JPEG via `/api/run-img`, wraps it in a
   4×6" PDF (pdf-lib), sends to the `Printer` driver, acks the job.
@@ -234,7 +239,8 @@ npm install && npm start
 - `GET /kiosk/review` — review screen with "Make my postcard" CTA
 - `POST /api/kiosk/start` — validates `{ sessionId, selfieKey, sceneId }`, mints workflow, returns `{ instanceId, statusUrl }`
 - `GET /kiosk/status/:instanceId?session=<sid>` — live stepper (SessionDO WebSocket)
-- `GET /kiosk/done?session=<sid>` — done screen: postcard, QR, countdown
+- `GET /kiosk/done?session=<sid>` — done screen: postcard, QR, opt-in Print button, countdown
+- `POST /api/kiosk/print` — body `{ sessionId }`, enqueues a `print_jobs` row (idempotent)
 - `GET /api/kiosk/qr?url=<encoded>` — returns `qrPng(url, 400)` as `image/png` (origin-locked)
 
 ### Big screen display (Phase 7 — live)
@@ -312,8 +318,9 @@ All test endpoints stay in place during development — they'll be cleaned up be
 20. **Printed postcard has no QR baked in** (removed in step 6.6). The QR for digital pickup lives only on the `/kiosk/done` screen (header, top-right, points to `/p/:sessionId`). The `/test-postcard` dev endpoint still passes `qrUrl` to `buildPostcard` so the QR feature is still testable.
 21. **`/api/kiosk/qr` is origin-locked.** The `url` param must start with the Worker's own origin or the endpoint returns 403. This prevents it being used as an open QR-code proxy.
 22. **Print jobs use D1, not Cloudflare Queues.** A Queue was created in step 8.1 but we pivoted to D1-based `print_jobs` because: (a) the Mac mini agent is external and would need an API token to use the Queue HTTP pull API, (b) for a single-booth activation the Queue adds complexity without benefit, (c) D1 gives a persistent audit log for the admin dashboard. The Queue (`nyc-booth-print-queue`) still exists but is dormant — no producer binding, nothing writes to it.
-23. **The workflow's `store` step batches two D1 writes** — the session upsert and the print_jobs insert run in a single `DB.batch()` call. If either fails, the step retries both (idempotent via `ON CONFLICT` on sessions; print_jobs gets a new row on retry, but the agent handles duplicates by session_id).
+23. **The workflow's `store` step writes ONLY the session upsert** — no print_jobs INSERT anymore (changed during Phase 9.1 review). Originally batched both in a single `DB.batch()` call; now printing is user-initiated so the workflow only persists the session row. Idempotent via `ON CONFLICT` on retries.
 24. **Print agent endpoints are unauthenticated.** `/api/print-agent/jobs` and `/api/print-agent/jobs/:id/ack` have no auth gate. This is acceptable for an event activation on a private network, but should be locked down before any public deployment (Phase 10 auth gate will cover this).
+25. **Printing is opt-in (`POST /api/kiosk/print`).** Attendees tap "Print my postcard" on `/kiosk/done`; only then does a `print_jobs` row get inserted. The endpoint is idempotent — existing pending/printing/printed jobs for the same session_id return `alreadyQueued: true` without re-inserting. Only `failed` jobs can be re-queued. Anyone who only wants the digital copy (QR + `/p/:id`) never produces a print_jobs row at all, which keeps the audit log honest about what was actually printed.
 
 ---
 
