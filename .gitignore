@@ -172,3 +172,4 @@ public/app.css
 # Print agent output PDFs + mock printer spool
 print-agent/output/
 print-agent/spool/
+.DS_Store

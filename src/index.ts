@@ -158,7 +158,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "11.1" });
+	return c.json({ status: "ok", step: "11.2" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1287,6 +1287,100 @@ app.get("/api/kiosk/qr", (c) => {
 });
 
 /**
+ * Privacy / ToS micro-page (step 11.2).
+ *
+ * Placeholder copy — needs legal review before the event.
+ * TODO(legal): Have James send this copy to legal for review before NY Tech Week.
+ * GET /privacy
+ */
+app.get("/privacy", (c) => {
+	return c.html(
+		page(
+			"Privacy — I 🧡 NY Caricature Booth",
+			`<header class="px-6 sm:px-8 py-6 flex items-center justify-between">
+				<a href="/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
+					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
+					<span>Cloudflare &middot; NY Tech Week 2026</span>
+				</a>
+			</header>
+
+			<main class="max-w-2xl mx-auto px-6 sm:px-8 py-8 pb-20">
+				<h1 class="text-3xl font-bold mb-2">Privacy &amp; Data Handling</h1>
+				<p class="text-sm text-white/50 mb-8">Cloudflare NY Tech Week 2026 — AI Caricature Booth</p>
+
+				<!-- TODO(legal): Replace the placeholder sections below with
+				     legal-reviewed copy before the event. These are reasonable
+				     defaults for a conference activation but have NOT been
+				     vetted by Cloudflare Legal. -->
+
+				<section class="space-y-6 text-white/80 text-sm leading-relaxed">
+					<div>
+						<h2 class="text-lg font-semibold text-white mb-2">What we collect</h2>
+						<ul class="list-disc pl-5 space-y-1 text-white/70">
+							<li>A selfie photo you take at the booth</li>
+							<li>Your scene selection</li>
+							<li>Your email address (only if you opt in on the digital pickup page)</li>
+						</ul>
+					</div>
+
+					<div>
+						<h2 class="text-lg font-semibold text-white mb-2">How we use it</h2>
+						<ul class="list-disc pl-5 space-y-1 text-white/70">
+							<li>Your selfie is processed by AI (Cloudflare Workers AI) to generate a caricature postcard</li>
+							<li>The generated postcard is stored temporarily so you can download or share it</li>
+							<li>If you provide an email, we send you one email with your digital postcard — nothing else</li>
+						</ul>
+					</div>
+
+					<div>
+						<h2 class="text-lg font-semibold text-white mb-2">Data retention</h2>
+						<p class="text-white/70">
+							All photos and generated images are automatically deleted within 30 days after the event.
+							We do not keep your selfie or postcard indefinitely. Email addresses are stored only for
+							the purpose of sending your digital copy and are not shared with third parties.
+						</p>
+					</div>
+
+					<div>
+						<h2 class="text-lg font-semibold text-white mb-2">Where your data is processed</h2>
+						<p class="text-white/70">
+							Everything runs on Cloudflare's global network. Your selfie is processed in-region
+							and is not sent to external third-party services. AI inference (content moderation
+							and image generation) runs on Cloudflare Workers AI.
+						</p>
+					</div>
+
+					<div>
+						<h2 class="text-lg font-semibold text-white mb-2">Your rights</h2>
+						<p class="text-white/70">
+							You can choose not to participate. You can skip the email opt-in.
+							If you'd like your data removed before the automatic cleanup,
+							ask a staff member at the booth or email
+							<a href="mailto:devrel@cloudflare.com" class="text-cf-orange underline underline-offset-2 hover:text-white">devrel@cloudflare.com</a>.
+						</p>
+					</div>
+
+					<div>
+						<h2 class="text-lg font-semibold text-white mb-2">Questions?</h2>
+						<p class="text-white/70">
+							Find a staff member at the booth, or reach out at
+							<a href="mailto:devrel@cloudflare.com" class="text-cf-orange underline underline-offset-2 hover:text-white">devrel@cloudflare.com</a>.
+						</p>
+					</div>
+				</section>
+
+				<div class="mt-12 pt-6 border-t border-white/10 text-xs text-white/40">
+					<p>Cloudflare, Inc. &middot; This notice is specific to the NY Tech Week 2026 AI Caricature Booth activation.</p>
+					<p class="mt-1">For Cloudflare's general privacy policy, visit
+						<a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener" class="text-cf-orange underline underline-offset-2">cloudflare.com/privacypolicy</a>.
+					</p>
+				</div>
+			</main>`,
+		),
+	);
+});
+
+/**
  * Idle / landing screen. This is what passersby see when no one is using
  * the booth. Big visual, one obvious action.
  * GET /kiosk
@@ -1327,7 +1421,7 @@ app.get("/kiosk", (c) => {
 				</section>
 
 				<footer class="px-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
-					Photos processed on-device · No data stored after the event
+					We don't store your photo after the event · <a href="/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
 				</footer>
 			</main>`,
 		),
@@ -1413,6 +1507,9 @@ app.get("/kiosk/capture", (c) => {
 						</button>
 					</div>
 					<p id="cap-status" class="mt-2 sm:mt-4 text-center text-[11px] sm:text-xs text-white/40 min-h-[1rem]"></p>
+					<p class="mt-2 text-center text-[10px] uppercase tracking-[0.2em] text-white/25">
+						We don't store your photo after the event · <a href="/privacy" class="underline underline-offset-2 hover:text-white/40">Privacy</a>
+					</p>
 				</footer>
 			</main>
 
@@ -4493,10 +4590,13 @@ app.get("/p/:id", async (c) => {
 					</section>
 
 					<!-- Footer -->
-					<footer class="mt-12 flex items-center justify-center gap-2 text-xs text-white/40">
-						<span>Built end-to-end on</span>
-						<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-3.5 w-auto opacity-80" />
-						<span>Cloudflare</span>
+					<footer class="mt-12 flex flex-col items-center gap-2">
+						<div class="flex items-center gap-2 text-xs text-white/40">
+							<span>Built end-to-end on</span>
+							<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-3.5 w-auto opacity-80" />
+							<span>Cloudflare</span>
+						</div>
+						<a href="/privacy" class="text-[11px] uppercase tracking-[0.2em] text-white/30 underline underline-offset-2 hover:text-white/50">Privacy</a>
 					</footer>
 				</div>
 			</main>
