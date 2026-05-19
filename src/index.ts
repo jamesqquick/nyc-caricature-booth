@@ -17,6 +17,10 @@ import {
 	setAdminCookie,
 	signAdminToken,
 } from "./lib/admin-auth";
+import {
+	type AdminSessionRow,
+	loadAdminSessions,
+} from "./lib/admin-data";
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 export { SessionDO } from "./session/session";
@@ -149,7 +153,7 @@ app.get("/", (c) => {
 });
 
 app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "10.1" });
+	return c.json({ status: "ok", step: "10.2" });
 });
 
 // ---------------------------------------------------------------------------
@@ -162,6 +166,90 @@ app.get("/api/health", (c) => {
 
 app.use("/admin/*", adminAuthMiddleware());
 app.use("/api/admin/*", adminAuthMiddleware());
+
+// ---- Admin server-side rendering helpers (10.2) -----------------------------
+
+/**
+ * Escape a JSON string for safe embedding inside a <script>…</script> block.
+ * Without this, a `</script>` substring inside the JSON would close the tag.
+ * U+2028/U+2029 are also legal in JSON but illegal in raw JS source.
+ */
+function escapeScriptJson(json: string): string {
+	return json
+		.replace(/<\/script/gi, "<\\/script")
+		.replace(/\u2028/g, "\\u2028")
+		.replace(/\u2029/g, "\\u2029");
+}
+
+/** Status pill class — must match the client-side `statusClass` in /admin JS. */
+function adminStatusClass(s: string): string {
+	if (s === "completed") return "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30";
+	if (s === "errored") return "bg-red-500/20 text-red-300 ring-red-400/30";
+	if (!s || s === "pending") return "bg-white/10 text-white/60 ring-white/20";
+	return "bg-amber-500/20 text-amber-300 ring-amber-400/30";
+}
+
+function adminPrintClass(s: string | null): string {
+	if (s === "printed") return "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30";
+	if (s === "failed") return "bg-red-500/20 text-red-300 ring-red-400/30";
+	if (s === "printing") return "bg-cf-orange/20 text-cf-orange ring-cf-orange/30";
+	if (s === "pending") return "bg-amber-500/20 text-amber-300 ring-amber-400/30";
+	return "bg-white/5 text-white/40 ring-white/10";
+}
+
+function adminFmtTs(secs: number | null): string {
+	if (!secs) return "—";
+	// Use UTC for the server paint so the markup is deterministic; the client
+	// JS will re-render with the viewer's locale on first poll.
+	const d = new Date(secs * 1000);
+	const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+	const day = d.getUTCDate();
+	const hours = String(d.getUTCHours()).padStart(2, "0");
+	const minutes = String(d.getUTCMinutes()).padStart(2, "0");
+	return `${month} ${day}, ${hours}:${minutes} UTC`;
+}
+
+function adminFmtDuration(ms: number | null): string {
+	if (ms == null) return "—";
+	if (ms < 1000) return `${ms} ms`;
+	const s = Math.round(ms / 1000);
+	if (s < 60) return `${s}s`;
+	const m = Math.floor(s / 60);
+	return `${m}m ${s % 60}s`;
+}
+
+function escapeHtml(s: string): string {
+	return s
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
+function renderAdminTableBody(rows: AdminSessionRow[]): string {
+	if (rows.length === 0) {
+		return `<tr><td colspan="7" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>`;
+	}
+	return rows
+		.map((r) => {
+			const shortId = r.sessionId.slice(0, 8);
+			const status = r.status || "pending";
+			const printStatus = r.printStatus ?? "—";
+			return (
+				`<tr class="hover:bg-white/[0.03]">` +
+				`<td class="px-4 py-3 font-mono text-xs text-white/80">${escapeHtml(shortId)}</td>` +
+				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminStatusClass(status)}">${escapeHtml(status)}</span></td>` +
+				`<td class="px-4 py-3 text-white/80">${escapeHtml(r.sceneName ?? "—")}</td>` +
+				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${escapeHtml(adminFmtTs(r.createdAt))}</td>` +
+				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${escapeHtml(adminFmtDuration(r.pipelineDurationMs))}</td>` +
+				`<td class="px-4 py-3 text-white/60">${escapeHtml(r.emailMasked ?? "—")}</td>` +
+				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminPrintClass(r.printStatus)}">${escapeHtml(printStatus)}</span></td>` +
+				`</tr>`
+			);
+		})
+		.join("");
+}
 
 /**
  * Login form. Plain HTML, single password field. Honors a `?next=` redirect
@@ -263,28 +351,169 @@ app.get("/admin/logout", (c) => {
 });
 
 /**
- * Placeholder admin landing — wired up properly in 10.2.
- * If we got here the middleware already let us through.
+ * Admin dashboard (Phase 10.2).
+ *
+ * Server-renders the initial sessions table; client polls /api/admin/sessions
+ * every 10s and re-renders the <tbody>. Stats / manual controls land in 10.3 + 10.4.
  */
-app.get("/admin", (c) => {
+app.get("/admin", async (c) => {
+	const rows = await loadAdminSessions(c.env);
+	const initialJson = JSON.stringify({ sessions: rows });
+
 	return c.html(
 		page(
 			"Admin dashboard",
-			`<main class="min-h-screen flex flex-col items-center justify-center px-6">
-				<div class="w-full max-w-md text-center">
-					<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50 justify-center">
-						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-						<span>Booth admin</span>
+			`<main class="min-h-screen px-6 py-8 max-w-6xl mx-auto">
+				<header class="flex items-center justify-between mb-8">
+					<div>
+						<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50">
+							<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
+							<span>Booth admin</span>
+						</div>
+						<h1 class="mt-1 text-2xl font-bold">Live sessions</h1>
 					</div>
-					<h1 class="mt-3 text-3xl font-bold">Signed in</h1>
-					<p class="mt-2 text-white/60">Dashboard content lands in step 10.2.</p>
-					<a href="/admin/logout" class="mt-8 inline-block text-sm text-cf-orange hover:text-white underline underline-offset-4">
-						Sign out
-					</a>
-				</div>
-			</main>`,
+					<div class="flex items-center gap-4 text-xs text-white/50">
+						<span id="admin-poll-indicator" class="inline-flex items-center gap-2">
+							<span class="size-2 rounded-full bg-emerald-400 animate-pulse"></span>
+							<span>Auto-refresh · 10s</span>
+						</span>
+						<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
+					</div>
+				</header>
+
+				<section class="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+					<div class="overflow-x-auto">
+						<table class="w-full text-sm">
+							<thead class="bg-white/5 text-left text-[11px] uppercase tracking-widest text-white/50">
+								<tr>
+									<th class="px-4 py-3 font-medium">Session</th>
+									<th class="px-4 py-3 font-medium">Status</th>
+									<th class="px-4 py-3 font-medium">Scene</th>
+									<th class="px-4 py-3 font-medium">Created</th>
+									<th class="px-4 py-3 font-medium">Duration</th>
+									<th class="px-4 py-3 font-medium">Email</th>
+									<th class="px-4 py-3 font-medium">Print</th>
+								</tr>
+							</thead>
+							<tbody id="admin-tbody" class="divide-y divide-white/5">
+								${renderAdminTableBody(rows)}
+							</tbody>
+						</table>
+					</div>
+					<div class="px-4 py-2 text-[11px] uppercase tracking-widest text-white/40 border-t border-white/5 flex items-center justify-between">
+						<span><span id="admin-row-count">${rows.length}</span> sessions · last 30</span>
+						<span id="admin-last-updated">Updated just now</span>
+					</div>
+				</section>
+			</main>
+
+			<script id="admin-initial" type="application/json">${escapeScriptJson(initialJson)}</script>
+			<script>
+			(function () {
+				var initialEl = document.getElementById("admin-initial");
+				var lastSnapshot = JSON.parse(initialEl.textContent || '{"sessions":[]}');
+				var tbody = document.getElementById("admin-tbody");
+				var rowCount = document.getElementById("admin-row-count");
+				var lastUpdated = document.getElementById("admin-last-updated");
+
+				function escapeHtml(s) {
+					return String(s == null ? "" : s)
+						.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+						.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+				}
+
+				function statusClass(s) {
+					if (s === "completed") return "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30";
+					if (s === "errored")   return "bg-red-500/20 text-red-300 ring-red-400/30";
+					if (!s || s === "pending") return "bg-white/10 text-white/60 ring-white/20";
+					// queued | moderating | generating | compositing
+					return "bg-amber-500/20 text-amber-300 ring-amber-400/30";
+				}
+
+				function printClass(s) {
+					if (s === "printed")  return "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30";
+					if (s === "failed")   return "bg-red-500/20 text-red-300 ring-red-400/30";
+					if (s === "printing") return "bg-cf-orange/20 text-cf-orange ring-cf-orange/30";
+					if (s === "pending")  return "bg-amber-500/20 text-amber-300 ring-amber-400/30";
+					return "bg-white/5 text-white/40 ring-white/10";
+				}
+
+				function fmtTs(secs) {
+					if (!secs) return "—";
+					var d = new Date(secs * 1000);
+					return d.toLocaleString(undefined, {
+						month: "short", day: "numeric",
+						hour: "numeric", minute: "2-digit",
+					});
+				}
+
+				function fmtDuration(ms) {
+					if (ms == null) return "—";
+					if (ms < 1000) return ms + " ms";
+					var s = Math.round(ms / 1000);
+					if (s < 60) return s + "s";
+					var m = Math.floor(s / 60);
+					return m + "m " + (s % 60) + "s";
+				}
+
+				function renderRow(r) {
+					var shortId = (r.sessionId || "").slice(0, 8);
+					var status = r.status || "pending";
+					var printStatus = r.printStatus || "—";
+					return ''
+						+ '<tr class="hover:bg-white/[0.03]">'
+						+ '<td class="px-4 py-3 font-mono text-xs text-white/80">' + escapeHtml(shortId) + '</td>'
+						+ '<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ' + statusClass(status) + '">' + escapeHtml(status) + '</span></td>'
+						+ '<td class="px-4 py-3 text-white/80">' + escapeHtml(r.sceneName || "—") + '</td>'
+						+ '<td class="px-4 py-3 text-white/60 whitespace-nowrap">' + escapeHtml(fmtTs(r.createdAt)) + '</td>'
+						+ '<td class="px-4 py-3 text-white/60 whitespace-nowrap">' + escapeHtml(fmtDuration(r.pipelineDurationMs)) + '</td>'
+						+ '<td class="px-4 py-3 text-white/60">' + escapeHtml(r.emailMasked || "—") + '</td>'
+						+ '<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ' + printClass(r.printStatus) + '">' + escapeHtml(printStatus) + '</span></td>'
+						+ '</tr>';
+				}
+
+				function render(snapshot) {
+					var sessions = snapshot.sessions || [];
+					if (sessions.length === 0) {
+						tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>';
+					} else {
+						tbody.innerHTML = sessions.map(renderRow).join("");
+					}
+					rowCount.textContent = String(sessions.length);
+					lastUpdated.textContent = "Updated " + new Date().toLocaleTimeString();
+				}
+
+				async function poll() {
+					try {
+						var r = await fetch("/api/admin/sessions", { credentials: "same-origin" });
+						if (r.status === 401) {
+							window.location.href = "/admin/login";
+							return;
+						}
+						if (!r.ok) throw new Error("HTTP " + r.status);
+						var j = await r.json();
+						lastSnapshot = j;
+						render(j);
+					} catch (err) {
+						console.error("[admin] poll failed:", err);
+					}
+				}
+
+				// Initial paint is server-rendered; first client refresh fires after 10s.
+				setInterval(poll, 10000);
+			})();
+			</script>`,
 		),
 	);
+});
+
+/**
+ * Sessions JSON feed for the admin dashboard. Polled every 10s by /admin.
+ * GET /api/admin/sessions  →  { sessions: AdminSessionRow[] }
+ */
+app.get("/api/admin/sessions", async (c) => {
+	const rows = await loadAdminSessions(c.env);
+	return c.json({ sessions: rows });
 });
 
 // ---------------------------------------------------------------------------
