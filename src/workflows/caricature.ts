@@ -5,7 +5,7 @@ import {
 } from "cloudflare:workers";
 
 import { moderateImage, type ModerationVerdict } from "../lib/moderation";
-import { runFlux } from "../lib/flux";
+import { runReplicate } from "../lib/replicate";
 import { loadSceneById } from "../lib/scenes";
 import { buildPostcard } from "../lib/postcard";
 import { trackEvent } from "../lib/analytics";
@@ -158,18 +158,21 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					timeout: "2 minutes",
 				},
 				async () => {
-					const scene = await loadSceneById(this.env, sceneId);
+				const scene = await loadSceneById(this.env, sceneId);
 
-					const obj = await this.env.BUCKET.get(selfieKey);
-					if (!obj) throw new Error(`selfie not found in R2: ${selfieKey}`);
-					const selfieBytes = await obj.arrayBuffer();
-					const selfieType = obj.httpMetadata?.contentType || "image/jpeg";
+				const obj = await this.env.BUCKET.get(selfieKey);
+				if (!obj) throw new Error(`selfie not found in R2: ${selfieKey}`);
+				const selfieBytes = await obj.arrayBuffer();
+				const selfieType = obj.httpMetadata?.contentType || "image/jpeg";
 
-					const { bytes, contentType, elapsedMs } = await runFlux(this.env.AI, {
+				const { bytes, contentType, elapsedMs } = await runReplicate(
+					this.env.REPLICATE_API_TOKEN,
+					{
 						prompt: scene.prompt,
 						selfieBytes,
 						selfieType,
-					});
+					},
+				);
 
 					const ext = contentType === "image/png" ? "png" : "jpg";
 					const caricatureKey = `runs/${sessionId}/caricature.${ext}`;

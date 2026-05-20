@@ -12,6 +12,7 @@ interface __BaseEnv_Env {
 	ASSETS: Fetcher;
 	SESSION: DurableObjectNamespace<import("./src/index").SessionDO>;
 	CARICATURE_WORKFLOW: Workflow<Parameters<import("./src/index").CaricatureWorkflow['run']>[0]['payload']>;
+	REPLICATE_API_TOKEN: string;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
