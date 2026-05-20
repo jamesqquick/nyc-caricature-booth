@@ -43,11 +43,15 @@ export async function runReplicate(
 
 	// Encode selfie as base64 data URL so Replicate can accept it inline
 	// without needing a publicly accessible URL.
+	//
+	// We build the binary string in 32 KiB chunks instead of spreading the
+	// whole Uint8Array into String.fromCharCode(...). Spreading a multi-MB
+	// selfie blows the JS argument-count limit and throws
+	// "Maximum call stack size exceeded" in workerd/V8.
 	const mimeType = opts.selfieType || "image/jpeg";
-	const base64 = btoa(
-		String.fromCharCode(...new Uint8Array(opts.selfieBytes)),
-	);
-	const selfieDataUrl = `data:${mimeType};base64,${base64}`;
+	const selfieDataUrl = `data:${mimeType};base64,${encodeBase64(
+		new Uint8Array(opts.selfieBytes),
+	)}`;
 
 	// 1. Start the prediction
 	const createResp = await fetch(
@@ -157,6 +161,32 @@ export async function runReplicate(
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Base64-encode a Uint8Array safely, regardless of size.
+ *
+ * The naive approach — btoa(String.fromCharCode(...u8)) — throws
+ * "Maximum call stack size exceeded" once the array exceeds the engine's
+ * argument-count limit (somewhere around 65k–125k in V8). Real selfies are
+ * hundreds of KB to a few MB and reliably trip this.
+ *
+ * Building the binary string in 32 KiB chunks keeps each
+ * String.fromCharCode.apply call well under the limit.
+ */
+function encodeBase64(u8: Uint8Array): string {
+	const CHUNK = 0x8000; // 32 KiB
+	let binary = "";
+	for (let i = 0; i < u8.length; i += CHUNK) {
+		const chunk = u8.subarray(i, i + CHUNK);
+		// apply() expects an array-like of numbers; Uint8Array satisfies that
+		// at runtime, but TS's lib types want number[] — hence the cast.
+		binary += String.fromCharCode.apply(
+			null,
+			chunk as unknown as number[],
+		);
+	}
+	return btoa(binary);
 }
 
 type ReplicatePrediction = {
