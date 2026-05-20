@@ -173,3 +173,6 @@ public/app.css
 print-agent/output/
 print-agent/spool/
 .DS_Store
+
+# Git worktrees
+.worktrees/
