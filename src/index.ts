@@ -101,59 +101,97 @@ app.get("/", (c) => {
 	return c.html(
 		page(
 			"I 🧡 NY — Cloudflare NY Tech Week",
-			`<header class="absolute top-0 left-0 right-0 px-8 py-6 flex items-center justify-between">
-				<div class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60">
+			`<header class="px-6 sm:px-8 py-6 flex items-center">
+				<div class="flex items-center gap-2 text-xs sm:text-sm uppercase tracking-[0.25em] text-white/60">
 					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
 					<span>Cloudflare &middot; NY Tech Week 2026</span>
 				</div>
-				<a href="/api/health" class="text-xs text-white/40 hover:text-white/80 transition">/api/health</a>
 			</header>
-			<main class="min-h-screen flex flex-col items-center justify-center px-6">
-				<div class="flex items-center gap-6 text-7xl md:text-9xl font-black leading-none">
-					<span>I</span>
-					<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-20 md:h-28 w-auto drop-shadow-[0_0_24px_rgba(246,130,31,0.5)]" />
-					<span>NY</span>
-				</div>
-				<p class="mt-8 max-w-xl text-center text-lg text-white/70">
-					AI caricature postcard booth. Take a selfie, pick an iconic NYC scene, walk away with a postcard.
-				</p>
-				<div class="mt-12 inline-flex items-center gap-2 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-4 py-2 text-sm text-cf-orange">
-					<span class="size-2 rounded-full bg-cf-orange animate-pulse"></span>
-					Phase 6 complete &middot; Full kiosk flow live
-				</div>
-				<div class="mt-6 flex flex-col items-center gap-2">
-					<a href="/kiosk" class="text-sm text-cf-orange hover:text-white underline underline-offset-4 transition">
-						📱 Kiosk: idle → capture → scene → review → live status → done (6.6) →
+
+			<main class="px-6 sm:px-8 pb-20">
+				<!-- Hero -->
+				<section class="max-w-4xl mx-auto pt-12 sm:pt-20 flex flex-col items-center text-center">
+					<div class="flex items-center gap-5 sm:gap-6 text-7xl md:text-9xl font-black leading-none">
+						<span>I</span>
+						<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-20 md:h-28 w-auto drop-shadow-[0_0_24px_rgba(246,130,31,0.5)]" />
+						<span>NY</span>
+					</div>
+
+					<h1 class="mt-10 text-[clamp(2rem,5vw,3.5rem)] font-bold leading-tight text-balance">
+						AI Caricature Booth
+					</h1>
+					<p class="mt-4 max-w-xl text-lg text-white/70 text-balance">
+						Take a selfie, pick an iconic NYC scene, walk away with a printed postcard.
+						Built end-to-end on Cloudflare.
+					</p>
+
+					<a href="/kiosk"
+						class="mt-12 inline-flex items-center justify-center rounded-full bg-cf-orange px-10 py-4 text-base font-bold text-black shadow-[0_0_60px_rgba(246,130,31,0.35)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
+						Open the booth
 					</a>
-					<a href="/test-workflow-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						⚡ Full pipeline + live Session DO (step 5.4)
-					</a>
-					<a href="/test-session" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						🪪 Session DO playground (no workflow)
-					</a>
-					<a href="/api/test-workflow" target="_blank" rel="noopener" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						⚙️ Trigger bare workflow (no input)
-					</a>
-					<a href="/test-postcard" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						📮 4×6 postcard format with QR
-					</a>
-					<a href="/test-watermark" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						🏷️ Watermark overlay only
-					</a>
-					<a href="/test-moderate" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						🛡️ Content moderation
-					</a>
-					<a href="/test-scene-grid" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						🎬 Generate all 6 scenes from one selfie
-					</a>
-					<a href="/test-i2i" class="text-xs text-white/60 hover:text-white underline underline-offset-4 transition">
-						🪄 Single-scene caricature test
-					</a>
-					<a href="/api/test-ai" target="_blank" rel="noopener" class="text-xs text-white/40 hover:text-white/80 transition">
-						(or just the text-to-image test)
-					</a>
-				</div>
-			</main>`,
+				</section>
+
+				<!-- How it works -->
+				<section class="max-w-4xl mx-auto mt-24 sm:mt-32">
+					<h2 class="text-center text-xs uppercase tracking-[0.3em] text-white/40 mb-8">
+						How it works
+					</h2>
+					<ol class="grid sm:grid-cols-3 gap-4 sm:gap-6">
+						<li class="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+							<div class="text-cf-orange font-mono text-xs tracking-widest">STEP 01</div>
+							<div class="mt-3 text-lg font-semibold">Snap a selfie</div>
+							<p class="mt-2 text-sm text-white/60">
+								Step up to the booth and take a photo. No app, no signup.
+							</p>
+						</li>
+						<li class="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+							<div class="text-cf-orange font-mono text-xs tracking-widest">STEP 02</div>
+							<div class="mt-3 text-lg font-semibold">Pick an NYC scene</div>
+							<p class="mt-2 text-sm text-white/60">
+								Times Square, the subway, a bodega cat — choose your backdrop.
+							</p>
+						</li>
+						<li class="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
+							<div class="text-cf-orange font-mono text-xs tracking-widest">STEP 03</div>
+							<div class="mt-3 text-lg font-semibold">Take home a postcard</div>
+							<p class="mt-2 text-sm text-white/60">
+								We print it on the spot. Optionally email yourself a digital copy.
+							</p>
+						</li>
+					</ol>
+				</section>
+
+				<!-- Built on Cloudflare -->
+				<section class="max-w-4xl mx-auto mt-20 sm:mt-24">
+					<div class="rounded-2xl border border-white/10 bg-white/[0.02] px-6 py-8 sm:px-8">
+						<div class="text-center text-xs uppercase tracking-[0.3em] text-white/40">
+							Built on Cloudflare
+						</div>
+						<div class="mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm text-white/70">
+							<span>Workers</span>
+							<span class="text-white/20">·</span>
+							<span>Workers AI</span>
+							<span class="text-white/20">·</span>
+							<span>Workflows</span>
+							<span class="text-white/20">·</span>
+							<span>Durable Objects</span>
+							<span class="text-white/20">·</span>
+							<span>D1</span>
+							<span class="text-white/20">·</span>
+							<span>R2</span>
+							<span class="text-white/20">·</span>
+							<span>KV</span>
+							<span class="text-white/20">·</span>
+							<span>Analytics Engine</span>
+						</div>
+					</div>
+				</section>
+			</main>
+
+			<footer class="px-6 sm:px-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
+				We don't store your photo after the event &middot;
+				<a href="/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
+			</footer>`,
 		),
 	);
 });
@@ -701,13 +739,6 @@ app.get("/admin", async (c) => {
 				</header>
 
 				<section class="mb-6 flex flex-wrap items-center gap-2">
-					<a
-						href="/api/test-print-job"
-						target="_blank" rel="noopener"
-						class="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-4 py-2 text-xs text-white/80 hover:border-white/30 hover:text-white transition"
-					>
-						🧪 Seed test print job
-					</a>
 					<button
 						type="button"
 						id="admin-reseed-btn"
@@ -3207,36 +3238,6 @@ app.post("/api/print-agent/jobs/:id/ack", async (c) => {
 });
 
 /**
- * Test endpoint: seed a print job for an existing completed session.
- * GET /api/test-print-job?session=<sessionId>
- * If no session param, picks the most recent completed session.
- */
-app.get("/api/test-print-job", async (c) => {
-	const sessionId = c.req.query("session");
-	const origin = new URL(c.req.url).origin;
-
-	const row = sessionId
-		? await c.env.DB.prepare(
-				"SELECT id, postcard_key, scene_name FROM sessions WHERE id = ? AND status = 'completed'",
-			)
-				.bind(sessionId)
-				.first<{ id: string; postcard_key: string; scene_name: string }>()
-		: await c.env.DB.prepare(
-				"SELECT id, postcard_key, scene_name FROM sessions WHERE status = 'completed' AND postcard_key IS NOT NULL ORDER BY completed_at DESC LIMIT 1",
-			).first<{ id: string; postcard_key: string; scene_name: string }>();
-
-	if (!row) return c.json({ error: "no completed session found" }, 404);
-
-	await c.env.DB.prepare(
-		"INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name) VALUES (?, ?, ?, ?)",
-	)
-		.bind(row.id, row.postcard_key, `${origin}/p/${row.id}`, row.scene_name)
-		.run();
-
-	return c.json({ ok: true, sessionId: row.id, postcardKey: row.postcard_key, sceneName: row.scene_name });
-});
-
-/**
  * Triggers a new instance of the (bare) caricature workflow.
  * GET /api/test-workflow?note=...
  */
@@ -4729,19 +4730,20 @@ app.get("/p/:id", async (c) => {
 		return brandedPostcardNotFound(c, id);
 	}
 
-	// ---- Legacy short slug (test postcards from /test-postcard) ----
+	// ---- Legacy short slug (older sample postcards). Not a real session. ----
 	if (isShortSlug) {
 		return c.html(
 			page(
-				`Test postcard — ${id}`,
+				`Postcard — ${id}`,
 				`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 					<div class="text-center max-w-2xl">
 						<img src="/cloudflare-logo.png" alt="" class="mx-auto h-16 w-auto mb-6 drop-shadow-[0_0_24px_rgba(246,130,31,0.5)]" />
-						<h1 class="text-3xl font-bold mb-2">You scanned a test postcard</h1>
+						<h1 class="text-3xl font-bold mb-2">This postcard isn't available</h1>
 						<p class="text-white/60 mb-8">Postcard ID: <code class="text-cf-orange">${id}</code></p>
 						<p class="text-white/60">
-							This QR was generated by the <code>/test-postcard</code> dev endpoint.
-							Real postcards link to a session UUID and show the full digital pickup page.
+							This QR doesn't point to an active postcard. If you just took a photo
+							at the booth, double-check the QR on your printed postcard or ask a
+							staff member for help.
 						</p>
 						<a href="/" class="mt-10 inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
 							See what we built

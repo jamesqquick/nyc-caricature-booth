@@ -98,8 +98,6 @@ when the attendee taps "Print my postcard" on `/kiosk/done` (see gotcha #25).
   The admin middleware only gates `/admin/*` and `/api/admin/*`. Acceptable
   for an event on a private network; if the booth ever runs over the open
   internet, add a shared-secret header check on the agent endpoints.
-- **Test endpoint:** `GET /api/test-print-job?session=<id>` seeds a print
-  job for any existing completed session (useful for dev/testing).
 
 ### Phase 9 — digital copy ✅
 
@@ -145,7 +143,6 @@ only secret it relies on is the `ADMIN_PASSWORD` Worker secret.
     via `waitUntil` (stubbed body — see gotcha #26).
   - `POST /api/admin/reseed-scenes` — writes the bundled `seed/scenes.json`
     into KV. Bundle is captured at deploy time (see gotcha #29).
-  - Top-level "Seed test print job" link to existing `GET /api/test-print-job`.
 - **Auto-refresh** — both `/api/admin/sessions` and `/api/admin/stats`
   polled every 10s and rendered into the same DOM as the initial paint.
 - **Toasts** — Notyf via CDN (see gotcha #28).
@@ -323,9 +320,6 @@ python3 scripts/build-watermark.py
 # Type check
 npx tsc --noEmit
 
-# Trigger a workflow from CLI
-curl https://nyc-caricature-booth.examples.workers.dev/api/test-workflow
-
 # Apply D1 migrations
 npx wrangler d1 migrations apply nyc-booth-db --remote
 
@@ -369,9 +363,6 @@ Lives at **`/admin`**, password-gated. The cookie lasts 24h.
     opted in. Currently a no-op in terms of actual send (email is stubbed —
     see gotcha #26) but the wiring is complete.
 - **Top-level controls:**
-  - 🧪 **Seed test print job** — opens `/api/test-print-job` in a new tab.
-    Inserts a `pending` row against the most recent completed session;
-    the print agent picks it up on its next poll.
   - ♻️ **Re-seed scenes** — pushes the bundled `seed/scenes.json` into KV.
     Requires a `wrangler deploy` first if you've edited the JSON (see gotcha #29).
 - **Toasts:** Notyf via CDN. Slide-in from the bottom-right, click to dismiss.
@@ -416,51 +407,30 @@ Lives at **`/admin`**, password-gated. The cookie lasts 24h.
 - `DELETE /api/admin/session/:id` — purge all data for a session (D1, R2, DO)
 
 ### Public landing
-- `GET /` — branded landing page with links to every test page
+- `GET /` — production landing page: hero, "how it works", Cloudflare tech strip, link to `/kiosk` and `/privacy`. No dev links.
 - `GET /p/:id` — digital pickup landing (shows postcard for UUID sessions, email opt-in form, download, share)
 - `POST /api/p/:id/email` — body `{ email }`, stores email opt-in in D1 + triggers postcard email (stubbed)
 - `GET /privacy` — privacy & data handling page (placeholder copy — needs legal review, see TODO comments)
 - `GET /api/health` — returns `{ status, step }`
 
-### AI / Workflow tests
-- `GET /api/test-ai?prompt=...` — text-to-image FLUX.2
-- `GET /test-i2i` + `POST /api/test-i2i` — single-scene caricature
-- `GET /test-scene-grid` + `POST /api/test-scene-grid` — all 6 scenes in parallel
-- `GET /test-scene-grid/:runId` — side-by-side review for a run
-- `GET /api/scene-grid-img?key=...` — R2 image proxy (constrained to `prompt-spike/` prefix)
-- `GET /api/run-img?key=...` — R2 image proxy (constrained to `runs/` prefix)
-- `GET /test-moderate` + `POST /api/test-moderate` — image moderation
-- `GET /test-watermark` + `POST /api/test-watermark` — watermark overlay only
-- `GET /test-postcard` + `POST /api/test-postcard` — full 1800×1200 postcard + optional QR
-- `GET /api/test-workflow` — trigger bare workflow (just `hello` step)
-- `GET /api/test-workflow/:id` — workflow instance status
-- `GET /test-workflow-moderate` + `POST /api/test-workflow-moderate` — upload selfie + scene → full pipeline (redirects with `?session=<id>`)
-- `GET /test-workflow-moderate/:id?session=<sid>` — workflow status page; if `session` is present also subscribes to the SessionDO over WS
+### Image proxies + scenes
+- `GET /api/run-img?key=...` — R2 image proxy (constrained to `runs/` and `kiosk/` prefixes)
+- `GET /api/scene-grid-img?key=...` — R2 image proxy (constrained to `prompt-spike/` prefix; used by the dev scene-grid page)
+- `GET /api/scenes` — returns the 6 scenes from KV
 
-### Session DO (per-session live state)
-- `POST /api/test-session` — create a new session DO with a random UUID, seed to `queued`
-- `GET /api/test-session/:id` — fetch current state
-- `POST /api/test-session/:id/status` — mark step (validated state machine). Body: JSON, form-urlencoded, multipart, or `?status=` query
-- `DELETE /api/test-session/:id` — force-delete DO storage
-- `GET /api/session/:id/ws` — WebSocket upgrade → proxied to the DO's hibernating socket
-- `GET /test-session` — landing/create page
-- `GET /test-session/:id` — manual driver page with live WebSocket panel
-
-### R2 sanity endpoints
-- `GET /api/test-upload` — uploads a tiny PNG
-- `GET /api/test-list` — lists R2 objects
-- `GET /api/test-get?key=...` — fetches an R2 object
-
-### D1 / KV sanity
-- `GET /api/test-db` — inserts a session row, returns 5 most recent
-- `GET /api/scenes` — returns 6 scenes from KV
+### Session DO live socket
+- `GET /api/session/:id/ws` — WebSocket upgrade → proxied to the DO's hibernating socket. Used by the kiosk status screen.
 
 ### Print agent (polled by Mac mini)
 - `GET /api/print-agent/jobs?limit=5` — returns pending print jobs from D1
 - `POST /api/print-agent/jobs/:id/ack` — mark a job `printed` or `failed`
-- `GET /api/test-print-job?session=<id>` — seed a print job for an existing completed session (omit `session` for most recent)
 
-All test endpoints stay in place during development — they'll be cleaned up before launch.
+### Internal dev endpoints (not linked from production UI)
+A handful of `/test-*` (HTML form pages) and `/api/test-*` (handlers) routes
+remain in `src/index.ts` for local debugging — they aren't reachable from the
+homepage or admin dashboard anymore but still resolve if you know the URL.
+`GET /api/test-print-job` has been removed; staff can use the "Retry print"
+action on any completed session in `/admin` to exercise the print pipeline.
 
 ---
 
