@@ -39,14 +39,37 @@ function loadConfig(): AgentConfig {
 // Job handler
 // ---------------------------------------------------------------------------
 
-/** Download the postcard JPEG from the Worker's R2 proxy. */
+/**
+ * Download the postcard JPEG from the Worker's R2 proxy.
+ *
+ * Retries with exponential backoff to ride out transient venue WiFi blips.
+ * A single network hiccup must not mark the job permanently `failed` — only
+ * a genuine failure (postcard missing, R2 outage, etc.) should surface here.
+ */
 async function downloadPostcard(config: AgentConfig, postcardKey: string): Promise<Uint8Array> {
 	const url = `${config.workerUrl}/api/run-img?key=${encodeURIComponent(postcardKey)}`;
-	const res = await fetch(url);
-	if (!res.ok) {
-		throw new Error(`Failed to download postcard: HTTP ${res.status}`);
+	const delays = [500, 1500, 4000];
+	let lastErr: unknown;
+
+	for (let attempt = 0; attempt < delays.length; attempt++) {
+		try {
+			const res = await fetch(url);
+			if (!res.ok) {
+				throw new Error(`HTTP ${res.status}`);
+			}
+			return new Uint8Array(await res.arrayBuffer());
+		} catch (err) {
+			lastErr = err;
+			const msg = err instanceof Error ? err.message : String(err);
+			console.warn(`  [download] attempt ${attempt + 1}/${delays.length} failed: ${msg}`);
+			if (attempt < delays.length - 1) {
+				await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+			}
+		}
 	}
-	return new Uint8Array(await res.arrayBuffer());
+
+	const finalMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+	throw new Error(`Failed to download postcard after ${delays.length} attempts: ${finalMsg}`);
 }
 
 async function handleJob(config: AgentConfig, job: PrintJob): Promise<void> {
@@ -79,26 +102,49 @@ async function handleJob(config: AgentConfig, job: PrintJob): Promise<void> {
 // Poll loop
 // ---------------------------------------------------------------------------
 
+// Threshold for the "we appear to be offline" warning, in consecutive failed
+// polls. At the default 5s poll interval this is ~15s of total downtime —
+// enough to ignore brief blips, short enough that staff get a fast signal
+// when the venue WiFi drops or a captive portal needs re-auth.
+const OFFLINE_WARNING_THRESHOLD = 3;
+
+let consecutiveFailures = 0;
+
 async function poll(config: AgentConfig): Promise<void> {
+	let jobs: PrintJob[];
 	try {
-		const jobs = await fetchJobs(config);
-		if (jobs.length === 0) return;
-
-		console.log(`[poll] fetched ${jobs.length} pending job(s)`);
-
-		for (const job of jobs) {
-			try {
-				await handleJob(config, job);
-				await ackJob(config, job.id, "printed");
-				console.log(`  [ack] job=${job.id} status=printed`);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				console.error(`  [fail] job=${job.id}: ${msg}`);
-				await ackJob(config, job.id, "failed", msg).catch(() => {});
-			}
-		}
+		jobs = await fetchJobs(config);
 	} catch (err) {
-		console.error(`[poll] error: ${err instanceof Error ? err.message : String(err)}`);
+		consecutiveFailures++;
+		const msg = err instanceof Error ? err.message : String(err);
+		if (consecutiveFailures === OFFLINE_WARNING_THRESHOLD) {
+			console.error(
+				`[poll] ⚠️  OFFLINE — ${OFFLINE_WARNING_THRESHOLD} consecutive failed polls. Check WiFi / captive portal.`,
+			);
+		}
+		console.error(`[poll] error (#${consecutiveFailures}): ${msg}`);
+		return;
+	}
+
+	if (consecutiveFailures >= OFFLINE_WARNING_THRESHOLD) {
+		console.log(`[poll] ✅ recovered after ${consecutiveFailures} failed polls`);
+	}
+	consecutiveFailures = 0;
+
+	if (jobs.length === 0) return;
+
+	console.log(`[poll] fetched ${jobs.length} pending job(s)`);
+
+	for (const job of jobs) {
+		try {
+			await handleJob(config, job);
+			await ackJob(config, job.id, "printed");
+			console.log(`  [ack] job=${job.id} status=printed`);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.error(`  [fail] job=${job.id}: ${msg}`);
+			await ackJob(config, job.id, "failed", msg).catch(() => {});
+		}
 	}
 }
 
