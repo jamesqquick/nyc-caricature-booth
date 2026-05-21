@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 
 import { moderateImage } from "./lib/moderation";
 import { runFlux } from "./lib/flux";
+import { runReplicate } from "./lib/replicate";
 import { loadScenes, type Scene } from "./lib/scenes";
 import {
 	POSTCARD_H,
@@ -4100,11 +4101,17 @@ app.post("/api/test-i2i", async (c) => {
 
 	const selfieBytes = await selfie.arrayBuffer();
 	try {
-		const { bytes, contentType, elapsedMs } = await runFlux(c.env.AI, {
-			prompt: scene.prompt,
-			selfieBytes,
-			selfieType: selfie.type,
-		});
+		// Use nano-banana via Replicate so this test endpoint matches
+		// what the production workflow (CaricatureWorkflow) uses. Iterating
+		// on prompts against FLUX would give misleading results.
+		const { bytes, contentType, elapsedMs } = await runReplicate(
+			c.env.REPLICATE_API_TOKEN,
+			{
+				prompt: scene.prompt,
+				selfieBytes,
+				selfieType: selfie.type,
+			},
+		);
 
 		return new Response(bytes, {
 			headers: {
@@ -4211,11 +4218,17 @@ app.post("/api/test-scene-grid", async (c) => {
 	const overallStart = Date.now();
 	const results = await Promise.allSettled(
 		scenes.map(async (scene) => {
-			const { bytes, contentType, elapsedMs } = await runFlux(c.env.AI, {
-				prompt: scene.prompt,
-				selfieBytes,
-				selfieType,
-			});
+			// Use nano-banana via Replicate so the scene grid matches the
+			// production workflow's model. Otherwise we'd be tuning prompts
+			// against the wrong model.
+			const { bytes, contentType, elapsedMs } = await runReplicate(
+				c.env.REPLICATE_API_TOKEN,
+				{
+					prompt: scene.prompt,
+					selfieBytes,
+					selfieType,
+				},
+			);
 			const ext = contentType === "image/png" ? "png" : "jpg";
 			const key = `prompt-spike/${runId}/${scene.id}.${ext}`;
 			await c.env.BUCKET.put(key, bytes, {
