@@ -26,8 +26,8 @@ import {
 	loadAdminStats,
 } from "./lib/admin-data";
 import { loadEventContext } from "./lib/event-ctx";
-import type { EventContext, EventRecord, SceneRecord } from "./lib/types";
-import { renderHero, renderHeaderPill, renderWordmarkText, renderSceneOptions } from "./components/wordmark";
+import type { EventContext } from "./lib/types";
+import { renderSceneOptions } from "./components/wordmark";
 // Bundled scenes seed — used by the admin "Re-seed scenes" control to push
 // the canonical scene definitions into KV without needing wrangler CLI.
 import scenesSeed from "../seed/scenes.json";
@@ -115,13 +115,11 @@ app.get("/", async (c) => {
 	const { event } = await getDefaultEventCtx(c.env);
 	return c.html(
 		page(
-			`${renderWordmarkText(event)} — ${event.name}`,
+			`${event.name} — AI Caricature Booth`,
 			`<main class="px-6 sm:px-8 pb-20">
 				<!-- Hero -->
 				<section class="max-w-4xl mx-auto pt-12 sm:pt-20 flex flex-col items-center text-center">
-					${renderHero(event, "lg")}
-
-					<h1 class="mt-10 text-[clamp(2rem,5vw,3.5rem)] font-bold leading-tight text-balance">
+					<h1 class="text-[clamp(2rem,5vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
 					</h1>
 					<p class="mt-4 max-w-xl text-lg text-white/70 text-balance">
@@ -1668,7 +1666,7 @@ app.get("/privacy", async (c) => {
 	const { event } = await getDefaultEventCtx(c.env);
 	return c.html(
 		page(
-			`Privacy — ${renderWordmarkText(event)} Caricature Booth`,
+			`Privacy — ${event.name} Caricature Booth`,
 			`<header class="px-6 sm:px-8 py-6 flex items-center justify-between">
 				<a href="/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
 					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
@@ -1761,17 +1759,14 @@ app.get("/kiosk", async (c) => {
 	const { event } = await getDefaultEventCtx(c.env);
 	return c.html(
 		kioskPage(
-			`${renderWordmarkText(event)} — Tap to start`,
-			`<main class="h-full w-full flex flex-col">
+			`${event.name} — Tap to start`,
+			`<main class="h-full w-full flex flex-col pt-10">
 				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
-					${renderHero(event, "lg")}
-
-					<h1 class="mt-10 text-[clamp(2rem,6vw,3.5rem)] font-bold leading-tight text-balance">
+					<h1 class="text-[clamp(2rem,6vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
 					</h1>
 					<p class="mt-4 max-w-md text-lg text-white/70 text-balance">
 						${escapeAttr(event.tagline)}
-						Built end-to-end on Cloudflare.
 					</p>
 
 					<a href="/kiosk/capture"
@@ -1780,7 +1775,7 @@ app.get("/kiosk", async (c) => {
 					</a>
 				</section>
 
-				<footer class="px-8 pt-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
+				<footer class="px-8 pt-12 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
 					We don't store your photo after the event · <a href="/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
 				</footer>
 			</main>`,
@@ -3027,14 +3022,13 @@ app.get("/display", async (c) => {
 
 	return c.html(
 		page(
-			`${renderWordmarkText(event)} — Gallery`,
+			`${event.name} — Gallery`,
 			`<div class="display-shimmer fixed inset-0 pointer-events-none" aria-hidden="true"></div>
 			<header class="relative px-12 pt-10 pb-8 flex items-center justify-between">
-				<div class="text-sm uppercase tracking-widest text-white/60">
+				<div class="text-lg font-bold uppercase tracking-widest text-white/80">
 					${escapeAttr(event.name)}
 				</div>
 				<img src="/api/kiosk/qr?url=${encodeURIComponent(qrTarget)}" alt="QR code — scan to start" class="h-24 w-24 rounded" />
-				${renderHero(event, "md")}
 			</header>
 			<main class="relative px-12 pb-12">
 				<div class="mb-8 flex items-end justify-between">
