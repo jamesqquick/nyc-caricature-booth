@@ -3027,6 +3027,9 @@ app.get("/display", async (c) => {
 		<p class="mt-1 text-sm text-white/40">Walk over to the iPad to get started.</p>
 	</div>`;
 
+	const origin = new URL(c.req.url).origin;
+	const qrTarget = `${origin}/kiosk`;
+
 	return c.html(
 		page(
 			"I 🧡 NY — Gallery",
@@ -3035,7 +3038,7 @@ app.get("/display", async (c) => {
 				<div class="text-sm uppercase tracking-widest text-white/60">
 					NY Tech Week 2026
 				</div>
-				<img src="/api/kiosk/qr?url=${encodeURIComponent("https://nyc-caricature-booth.examples.workers.dev")}" alt="QR code — scan to visit" class="h-24 w-24 rounded" />
+				<img src="/api/kiosk/qr?url=${encodeURIComponent(qrTarget)}" alt="QR code — scan to start" class="h-24 w-24 rounded" />
 				<div class="flex items-center gap-4 text-4xl font-black leading-none">
 					<span>I</span>
 					<img src="/cloudflare-logo.png" alt="Cloudflare" class="display-glow h-10 w-auto" />
