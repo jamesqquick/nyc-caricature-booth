@@ -116,11 +116,7 @@ app.get("/", async (c) => {
 	return c.html(
 		page(
 			`${renderWordmarkText(event)} — ${event.name}`,
-			`<header class="px-6 sm:px-8 py-6 flex items-center">
-				${renderHeaderPill(event)}
-			</header>
-
-			<main class="px-6 sm:px-8 pb-20">
+			`<main class="px-6 sm:px-8 pb-20">
 				<!-- Hero -->
 				<section class="max-w-4xl mx-auto pt-12 sm:pt-20 flex flex-col items-center text-center">
 					${renderHero(event, "lg")}
@@ -1789,7 +1785,7 @@ app.get("/kiosk", async (c) => {
 					</a>
 				</section>
 
-				<footer class="px-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
+				<footer class="px-8 pt-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
 					We don't store your photo after the event · <a href="/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
 				</footer>
 			</main>`,

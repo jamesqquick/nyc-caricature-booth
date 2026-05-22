@@ -38,10 +38,9 @@ export function renderHero(
 		return `<img src="/api/event-asset/${esc(event.id)}/wordmark" alt="${esc(event.name)}" class="${imgClass}" />`;
 	}
 
-	// Parse wordmark_text to split around a middle logo.
-	// Convention: if the text contains a pipe "|", left|right are the two halves
-	// with the CF logo in between. E.g. "I 🧡|NY" -> I 🧡 [logo] NY.
-	// If no pipe, just render the text as-is with the logo next to it.
+	// Convention: wordmark_text uses "|" to mark where the brand image goes.
+	// E.g. "I|NY" renders as: I [CF logo or uploaded PNG] NY.
+	// The logo/image replaces the pipe. If no pipe, the logo sits before the text.
 	const parts = event.wordmark_text.split("|");
 	const left = parts[0]?.trim() ?? "";
 	const right = parts[1]?.trim() ?? "";
@@ -76,11 +75,11 @@ export function renderHero(
 
 /**
  * Small inline wordmark for headers/labels (e.g. "I 🧡 NY · Caricature Booth").
- * Returns plain text — no logo image.
+ * Returns plain text — no logo image. The pipe "|" is replaced with " 🧡 "
+ * to give a readable plain-text representation (e.g. "I|NY" → "I 🧡 NY").
  */
 export function renderWordmarkText(event: EventRecord): string {
-	// Strip the pipe separator if present
-	return event.wordmark_text.replace("|", " ");
+	return event.wordmark_text.replace("|", " 🧡 ");
 }
 
 /**

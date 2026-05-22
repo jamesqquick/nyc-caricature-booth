@@ -89,7 +89,7 @@ INSERT INTO events (
 	'nyc-tech-week-2026',
 	'NY Tech Week 2026',
 	'active',
-	'I 🧡 NY',
+	'I|NY',
 	'#f6821f',
 	'🗽',
 	'Take a selfie, pick an iconic NYC scene, walk away with a printed postcard.',
