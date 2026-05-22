@@ -210,7 +210,12 @@ export async function buildPostcard(
 	baseStream: ReadableStream,
 	opts: { qrUrl?: string; event?: EventRecord } = {},
 ): Promise<Response> {
-	const watermarkBody = await loadWatermarkBody(env, opts.event);
+	// Read the watermark eagerly into a fresh stream we own. We can't just
+	// stash `wmResp.body` and pass it along: the underlying Response goes out
+	// of scope, gets GC'd, and the stream is cancelled before the IMAGES
+	// pipeline reads it — silently producing a postcard with no watermark.
+	// Pulling bytes into memory is fine; the watermark is tiny (<50 KB).
+	const watermarkBytes = await loadWatermarkBytes(env, opts.event);
 
 	let pipeline = env.IMAGES.input(baseStream).transform({
 		width: POSTCARD_W,
@@ -235,8 +240,14 @@ export async function buildPostcard(
 		}
 	}
 
+	// Wrap the watermark bytes into a fresh ReadableStream just for the
+	// IMAGES.input() call — same pattern we already use for the QR PNG above.
+	const watermarkStream = new Response(watermarkBytes).body;
+	if (!watermarkStream) {
+		throw new Error("watermark stream unavailable");
+	}
 	pipeline = pipeline.draw(
-		env.IMAGES.input(watermarkBody).transform({ width: POSTCARD_WATERMARK_W }),
+		env.IMAGES.input(watermarkStream).transform({ width: POSTCARD_WATERMARK_W }),
 		{
 			bottom: POSTCARD_WATERMARK_MARGIN,
 			right: POSTCARD_WATERMARK_MARGIN,
@@ -249,31 +260,39 @@ export async function buildPostcard(
 }
 
 /**
- * Resolves the watermark image body to composite onto the postcard.
+ * Reads the watermark image fully into memory.
  *
  * Priority:
  *   1. event.watermark_image_key (R2) — uploaded via the admin UI
  *   2. public/watermark.png (ASSETS) — bundled default Cloudflare wordmark
  *
+ * Returning bytes (not a stream) avoids a subtle lifetime bug: if we hand a
+ * stream back, the underlying R2Object / Response can be GC'd before the
+ * IMAGES pipeline drains it, cancelling the stream and silently producing
+ * a watermark-less postcard. Watermarks are tiny so loading into memory is
+ * fine.
+ *
  * The R2 lookup is best-effort: if the key is set but the object is missing
  * (e.g. someone trashed it manually) we log and fall through to the bundled
  * asset rather than failing the whole postcard build.
  */
-async function loadWatermarkBody(
+async function loadWatermarkBytes(
 	env: Env,
 	event: EventRecord | undefined,
-): Promise<ReadableStream> {
+): Promise<ArrayBuffer> {
 	if (event?.watermark_image_key) {
 		const obj = await env.BUCKET.get(event.watermark_image_key);
-		if (obj?.body) return obj.body;
+		if (obj) {
+			return await obj.arrayBuffer();
+		}
 		console.warn(
 			`[postcard] event '${event.id}' references missing watermark R2 key '${event.watermark_image_key}', falling back to bundled asset`,
 		);
 	}
 
 	const wmResp = await env.ASSETS.fetch(new Request("http://internal/watermark.png"));
-	if (!wmResp.ok || !wmResp.body) {
-		throw new Error("watermark asset not available");
+	if (!wmResp.ok) {
+		throw new Error(`watermark asset not available: HTTP ${wmResp.status}`);
 	}
-	return wmResp.body;
+	return await wmResp.arrayBuffer();
 }
