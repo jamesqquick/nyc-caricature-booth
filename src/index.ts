@@ -25,9 +25,22 @@ import {
 	loadAdminSessions,
 	loadAdminStats,
 } from "./lib/admin-data";
+import { loadEventContext } from "./lib/event-ctx";
+import type { EventContext, EventRecord, SceneRecord } from "./lib/types";
+import { renderHero, renderHeaderPill, renderWordmarkText, renderSceneOptions } from "./components/wordmark";
 // Bundled scenes seed — used by the admin "Re-seed scenes" control to push
 // the canonical scene definitions into KV without needing wrangler CLI.
 import scenesSeed from "../seed/scenes.json";
+
+/** Default event ID — used until Phase 3 adds /e/:eventId routing. */
+const DEFAULT_EVENT_ID = "nyc-tech-week-2026";
+
+/** Load the default event context. Throws if the event doesn't exist in D1. */
+async function getDefaultEventCtx(env: Env): Promise<EventContext> {
+	const ctx = await loadEventContext(env, DEFAULT_EVENT_ID);
+	if (!ctx) throw new Error(`Default event '${DEFAULT_EVENT_ID}' not found in D1`);
+	return ctx;
+}
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 export { SessionDO } from "./session/session";
@@ -98,31 +111,25 @@ const kioskPage = (title: string, body: string) => `<!doctype html>
 	</body>
 </html>`;
 
-app.get("/", (c) => {
+app.get("/", async (c) => {
+	const { event } = await getDefaultEventCtx(c.env);
 	return c.html(
 		page(
-			"I 🧡 NY — Cloudflare NY Tech Week",
+			`${renderWordmarkText(event)} — ${event.name}`,
 			`<header class="px-6 sm:px-8 py-6 flex items-center">
-				<div class="flex items-center gap-2 text-xs sm:text-sm uppercase tracking-[0.25em] text-white/60">
-					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
-					<span>Cloudflare &middot; NY Tech Week 2026</span>
-				</div>
+				${renderHeaderPill(event)}
 			</header>
 
 			<main class="px-6 sm:px-8 pb-20">
 				<!-- Hero -->
 				<section class="max-w-4xl mx-auto pt-12 sm:pt-20 flex flex-col items-center text-center">
-					<div class="flex items-center gap-5 sm:gap-6 text-7xl md:text-9xl font-black leading-none">
-						<span>I</span>
-						<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-20 md:h-28 w-auto drop-shadow-[0_0_24px_rgba(246,130,31,0.5)]" />
-						<span>NY</span>
-					</div>
+					${renderHero(event, "lg")}
 
 					<h1 class="mt-10 text-[clamp(2rem,5vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
 					</h1>
 					<p class="mt-4 max-w-xl text-lg text-white/70 text-balance">
-						Take a selfie, pick an iconic NYC scene, walk away with a printed postcard.
+						${escapeAttr(event.tagline)}
 						Built end-to-end on Cloudflare.
 					</p>
 
@@ -147,9 +154,9 @@ app.get("/", (c) => {
 						</li>
 						<li class="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
 							<div class="text-cf-orange font-mono text-xs tracking-widest">STEP 02</div>
-							<div class="mt-3 text-lg font-semibold">Pick an NYC scene</div>
+							<div class="mt-3 text-lg font-semibold">Pick a scene</div>
 							<p class="mt-2 text-sm text-white/60">
-								Times Square, the subway, a bodega cat — choose your backdrop.
+								Choose your backdrop from the scene picker.
 							</p>
 						</li>
 						<li class="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
@@ -397,7 +404,7 @@ app.get("/admin/login", (c) => {
 
 	return c.html(
 		page(
-			"Admin · I 🧡 NY booth",
+			"Admin · Caricature Booth",
 			`<main class="min-h-screen flex flex-col items-center justify-center px-6">
 				<div class="w-full max-w-sm">
 					<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50 justify-center">
@@ -1166,7 +1173,7 @@ app.post("/api/admin/reprint/:id", async (c) => {
 
 	const origin = new URL(c.req.url).origin;
 	const postcardUrl = `${origin}/p/${id}`;
-	const sceneName = session.scene_name ?? "NYC scene";
+	const sceneName = session.scene_name ?? "Scene";
 
 	const result = await c.env.DB.prepare(
 		`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
@@ -1228,7 +1235,7 @@ app.post("/api/admin/resend-email/:id", async (c) => {
 	const origin = new URL(c.req.url).origin;
 	const email = session.email;
 	const postcardKey = session.postcard_key;
-	const sceneName = session.scene_name ?? "NYC scene";
+	const sceneName = session.scene_name ?? "Scene";
 
 	console.log(
 		`[admin-resend] session=${id} email=${email.slice(0, 3)}***`,
@@ -1561,7 +1568,7 @@ app.post("/api/kiosk/print", async (c) => {
 
 	const origin = new URL(c.req.url).origin;
 	const postcardUrl = `${origin}/p/${sessionId}`;
-	const sceneName = session.scene_name ?? "NYC scene";
+	const sceneName = session.scene_name ?? "Scene";
 
 	const insertResult = await c.env.DB.prepare(
 		`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
@@ -1661,20 +1668,21 @@ app.get("/api/kiosk/qr", (c) => {
  * TODO(legal): Have James send this copy to legal for review before NY Tech Week.
  * GET /privacy
  */
-app.get("/privacy", (c) => {
+app.get("/privacy", async (c) => {
+	const { event } = await getDefaultEventCtx(c.env);
 	return c.html(
 		page(
-			"Privacy — I 🧡 NY Caricature Booth",
+			`Privacy — ${renderWordmarkText(event)} Caricature Booth`,
 			`<header class="px-6 sm:px-8 py-6 flex items-center justify-between">
 				<a href="/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
 					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
-					<span>Cloudflare &middot; NY Tech Week 2026</span>
+					<span>Cloudflare &middot; ${escapeAttr(event.name)}</span>
 				</a>
 			</header>
 
 			<main class="max-w-2xl mx-auto px-6 sm:px-8 py-8 pb-20">
 				<h1 class="text-3xl font-bold mb-2">Privacy &amp; Data Handling</h1>
-				<p class="text-sm text-white/50 mb-8">Cloudflare NY Tech Week 2026 — AI Caricature Booth</p>
+				<p class="text-sm text-white/50 mb-8">Cloudflare ${escapeAttr(event.name)} — AI Caricature Booth</p>
 
 				<!-- TODO(legal): Replace the placeholder sections below with
 				     legal-reviewed copy before the event. These are reasonable
@@ -1724,7 +1732,7 @@ app.get("/privacy", (c) => {
 							You can choose not to participate. You can skip the email opt-in.
 							If you'd like your data removed before the automatic cleanup,
 							ask a staff member at the booth or email
-							<a href="mailto:devrel@cloudflare.com" class="text-cf-orange underline underline-offset-2 hover:text-white">devrel@cloudflare.com</a>.
+							<a href="mailto:${escapeAttr(event.privacy_email)}" class="text-cf-orange underline underline-offset-2 hover:text-white">${escapeAttr(event.privacy_email)}</a>.
 						</p>
 					</div>
 
@@ -1732,13 +1740,13 @@ app.get("/privacy", (c) => {
 						<h2 class="text-lg font-semibold text-white mb-2">Questions?</h2>
 						<p class="text-white/70">
 							Find a staff member at the booth, or reach out at
-							<a href="mailto:devrel@cloudflare.com" class="text-cf-orange underline underline-offset-2 hover:text-white">devrel@cloudflare.com</a>.
+							<a href="mailto:${escapeAttr(event.privacy_email)}" class="text-cf-orange underline underline-offset-2 hover:text-white">${escapeAttr(event.privacy_email)}</a>.
 						</p>
 					</div>
 				</section>
 
 				<div class="mt-12 pt-6 border-t border-white/10 text-xs text-white/40">
-					<p>Cloudflare, Inc. &middot; This notice is specific to the NY Tech Week 2026 AI Caricature Booth activation.</p>
+					<p>Cloudflare, Inc. &middot; This notice is specific to the ${escapeAttr(event.name)} AI Caricature Booth activation.</p>
 					<p class="mt-1">For Cloudflare's general privacy policy, visit
 						<a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener" class="text-cf-orange underline underline-offset-2">cloudflare.com/privacypolicy</a>.
 					</p>
@@ -1753,29 +1761,25 @@ app.get("/privacy", (c) => {
  * the booth. Big visual, one obvious action.
  * GET /kiosk
  */
-app.get("/kiosk", (c) => {
+app.get("/kiosk", async (c) => {
+	const { event } = await getDefaultEventCtx(c.env);
 	return c.html(
 		kioskPage(
-			"I 🧡 NY — Tap to start",
+			`${renderWordmarkText(event)} — Tap to start`,
 			`<main class="h-full w-full flex flex-col">
 				<header class="px-8 pt-10 pb-4 flex items-center gap-3 text-white/70">
 					<img src="/cloudflare-logo.png" alt="" class="h-6 w-6" />
-					<span class="text-xs uppercase tracking-[0.25em]">Cloudflare · NY Tech Week 2026</span>
+					<span class="text-xs uppercase tracking-[0.25em]">${escapeAttr(event.kiosk_idle_subhead)}</span>
 				</header>
 
 				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
-					<div class="flex items-center gap-4 text-[clamp(4rem,18vw,11rem)] font-bold leading-none">
-						<span>I</span>
-						<img src="/cloudflare-logo.png" alt="Cloudflare"
-							class="h-[0.85em] w-auto drop-shadow-[0_0_40px_rgba(246,130,31,0.55)]" />
-						<span>NY</span>
-					</div>
+					${renderHero(event, "lg")}
 
 					<h1 class="mt-10 text-[clamp(2rem,6vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
 					</h1>
 					<p class="mt-4 max-w-md text-lg text-white/70 text-balance">
-						Take a selfie, pick an iconic NYC scene, walk away with a printed postcard.
+						${escapeAttr(event.tagline)}
 						Built end-to-end on Cloudflare.
 					</p>
 
@@ -2063,9 +2067,10 @@ app.get("/kiosk/capture", (c) => {
  * GET /kiosk/scene
  */
 app.get("/kiosk/scene", async (c) => {
+	const eventCtx = await getDefaultEventCtx(c.env);
 	let scenes: Scene[];
 	try {
-		scenes = await loadScenes(c.env);
+		scenes = eventCtx.scenes;
 	} catch (err) {
 		console.error("loadScenes failed:", err);
 		return c.html(
@@ -2108,7 +2113,7 @@ app.get("/kiosk/scene", async (c) => {
 
 				<section class="flex-1 min-h-0 flex flex-col items-center px-4 sm:px-6 pt-2 pb-4 gap-4 sm:gap-6">
 					<div class="text-center max-w-md">
-						<h1 class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Pick your NYC scene</h1>
+						<h1 class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">${escapeAttr(eventCtx.event.scene_picker_heading)}</h1>
 						<p class="mt-2 text-sm sm:text-base text-white/60">
 							Tap a scene to drop yourself into it.
 						</p>
@@ -2196,7 +2201,8 @@ app.get("/kiosk/scene", async (c) => {
  * page back-button doesn't accidentally re-trigger the workflow.
  * GET /kiosk/review
  */
-app.get("/kiosk/review", (c) => {
+app.get("/kiosk/review", async (c) => {
+	const { event } = await getDefaultEventCtx(c.env);
 	return c.html(
 		kioskPage(
 			"Review your postcard",
@@ -2230,7 +2236,7 @@ app.get("/kiosk/review", (c) => {
 						<div class="flex flex-col items-center gap-2">
 							<div class="text-xs uppercase tracking-[0.2em] text-white/40">Your scene</div>
 							<div class="aspect-[3/4] w-full max-w-[260px] rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5 flex flex-col items-center justify-center text-center">
-								<div id="rev-scene-emoji" class="text-6xl sm:text-7xl leading-none" aria-hidden="true">🗽</div>
+								<div id="rev-scene-emoji" class="text-6xl sm:text-7xl leading-none" aria-hidden="true">${event.empty_state_emoji}</div>
 								<div id="rev-scene-name" class="mt-3 text-base sm:text-lg font-semibold leading-tight">Loading…</div>
 							</div>
 						</div>
@@ -2332,7 +2338,8 @@ app.get("/kiosk/review", (c) => {
  *
  * GET /kiosk/status/:instanceId?session=<sid>
  */
-app.get("/kiosk/status/:instanceId", (c) => {
+app.get("/kiosk/status/:instanceId", async (c) => {
+	const { event } = await getDefaultEventCtx(c.env);
 	const instanceId = c.req.param("instanceId");
 	if (!UUID_RE.test(instanceId)) return c.notFound();
 	const sessionFromQs = c.req.query("session");
@@ -2362,7 +2369,7 @@ app.get("/kiosk/status/:instanceId", (c) => {
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
 					<div class="flex items-center gap-2 text-white/50 text-xs uppercase tracking-[0.25em]">
 						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-						<span>I 🧡 NY · Caricature Booth</span>
+						<span>${renderWordmarkText(event)} &middot; Caricature Booth</span>
 					</div>
 					<div id="status-conn" class="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-white/30">
 						<span id="status-conn-dot" class="size-2 rounded-full bg-yellow-400 animate-pulse"></span>
@@ -2981,6 +2988,7 @@ app.get("/kiosk/done", (c) => {
  * to avoid full re-renders.
  */
 app.get("/display", async (c) => {
+	const { event } = await getDefaultEventCtx(c.env);
 	const { results } = await c.env.DB.prepare(
 		`SELECT id, scene_name, postcard_key, completed_at
 		 FROM sessions
@@ -3022,7 +3030,7 @@ app.get("/display", async (c) => {
 		.join("");
 
 	const empty = `<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.02] py-24 text-center">
-		<div class="text-5xl">🗽</div>
+		<div class="text-5xl">${event.empty_state_emoji}</div>
 		<p class="mt-4 text-lg text-white/70">No postcards yet — be the first!</p>
 		<p class="mt-1 text-sm text-white/40">Walk over to the iPad to get started.</p>
 	</div>`;
@@ -3032,18 +3040,14 @@ app.get("/display", async (c) => {
 
 	return c.html(
 		page(
-			"I 🧡 NY — Gallery",
+			`${renderWordmarkText(event)} — Gallery`,
 			`<div class="display-shimmer fixed inset-0 pointer-events-none" aria-hidden="true"></div>
 			<header class="relative px-12 pt-10 pb-8 flex items-center justify-between">
 				<div class="text-sm uppercase tracking-widest text-white/60">
-					NY Tech Week 2026
+					${escapeAttr(event.name)}
 				</div>
 				<img src="/api/kiosk/qr?url=${encodeURIComponent(qrTarget)}" alt="QR code — scan to start" class="h-24 w-24 rounded" />
-				<div class="flex items-center gap-4 text-4xl font-black leading-none">
-					<span>I</span>
-					<img src="/cloudflare-logo.png" alt="Cloudflare" class="display-glow h-10 w-auto" />
-					<span>NY</span>
-				</div>
+				${renderHero(event, "md")}
 			</header>
 			<main class="relative px-12 pb-12">
 				<div class="mb-8 flex items-end justify-between">
@@ -3096,7 +3100,7 @@ app.get("/display", async (c) => {
 
 				function buildEmpty() {
 					return '<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.02] py-24 text-center">'
-						+ '<div class="text-5xl">🗽</div>'
+						+ '<div class="text-5xl">${event.empty_state_emoji}</div>'
 						+ '<p class="mt-4 text-lg text-white/70">No postcards yet — be the first!</p>'
 						+ '<p class="mt-1 text-sm text-white/40">Walk over to the iPad to get started.</p>'
 						+ '</div>';
@@ -3663,7 +3667,8 @@ app.get("/test-session/:id", (c) => {
  * Uploads a selfie, triggers the workflow, redirects to a status page.
  * GET /test-workflow-moderate
  */
-app.get("/test-workflow-moderate", (c) => {
+app.get("/test-workflow-moderate", async (c) => {
+	const { scenes } = await getDefaultEventCtx(c.env);
 	return c.html(
 		page(
 			"Workflow — Step 4.4",
@@ -3683,12 +3688,7 @@ app.get("/test-workflow-moderate", (c) => {
 					<div>
 						<label class="block text-sm font-medium mb-2">Scene</label>
 						<select id="wf-scene" name="scene_id" class="w-full rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
-							<option value="hot-dog-stand">🌭 Hot Dog Stand</option>
-							<option value="subway">🚇 Subway Platform</option>
-							<option value="central-park">🌳 Central Park</option>
-							<option value="broadway">🎭 Broadway</option>
-							<option value="times-square">🌆 Times Square</option>
-							<option value="brooklyn-bridge">🌉 Brooklyn Bridge</option>
+							${renderSceneOptions(scenes)}
 						</select>
 					</div>
 					<button id="wf-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
@@ -3997,7 +3997,8 @@ app.get("/test-workflow-moderate/:id", (c) => {
  * Simple HTML test form for image-to-image generation.
  * GET /test-i2i
  */
-app.get("/test-i2i", (c) => {
+app.get("/test-i2i", async (c) => {
+	const { scenes } = await getDefaultEventCtx(c.env);
 	return c.html(
 		page(
 			"Test image-to-image — Step 2.2",
@@ -4012,12 +4013,7 @@ app.get("/test-i2i", (c) => {
 					<div>
 						<label class="block text-sm font-medium mb-2">Scene</label>
 						<select id="i2i-scene" name="scene_id" class="w-full rounded-lg bg-black/40 border border-white/20 px-4 py-2 text-white">
-							<option value="hot-dog-stand">🌭 Hot Dog Stand</option>
-							<option value="subway">🚇 Subway Platform</option>
-							<option value="central-park">🌳 Central Park</option>
-							<option value="broadway">🎭 Broadway</option>
-							<option value="times-square">🌆 Times Square</option>
-							<option value="brooklyn-bridge">🌉 Brooklyn Bridge</option>
+							${renderSceneOptions(scenes)}
 						</select>
 					</div>
 					<button id="i2i-submit" type="submit" class="w-full rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition disabled:cursor-not-allowed disabled:opacity-60 inline-flex items-center justify-center gap-2">
@@ -4134,7 +4130,7 @@ app.get("/test-scene-grid", (c) => {
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Scene prompt spike</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
-					Upload one selfie. We'll generate one caricature for every NYC scene in parallel,
+					Upload one selfie. We'll generate one caricature for every scene in parallel,
 					save them to R2, and show them side by side so we can refine prompts.
 				</p>
 				<form id="grid-form" action="/api/test-scene-grid" method="post" enctype="multipart/form-data" class="w-full max-w-xl space-y-6 bg-white/5 rounded-2xl p-8 border border-white/10">
@@ -4375,7 +4371,7 @@ app.get("/api/run-img", async (c) => {
 	// user gets `postcard.jpg` instead of a UUID-laden URL.
 	if (c.req.query("download")) {
 		const tail = key.split("/").pop() ?? "image";
-		headers["content-disposition"] = `attachment; filename="nyc-${tail}"`;
+		headers["content-disposition"] = `attachment; filename="caricature-${tail}"`;
 	}
 
 	return new Response(obj.body, { headers });
@@ -4678,7 +4674,7 @@ app.post("/api/test-postcard", async (c) => {
  * The `id` is rendered as a short hex preview but not echoed verbatim into
  * the HTML beyond `.slice(0, 8)` so we don't reflect arbitrary input.
  */
-function brandedPostcardNotFound(c: Context<{ Bindings: Env }>, id?: string) {
+function brandedPostcardNotFound(c: Context<{ Bindings: Env }>, id?: string, emptyEmoji = "🎨") {
 	const idPreview = id ? id.slice(0, 8) : "";
 	const previewHtml = idPreview
 		? `<p class="text-white/60 mb-2">No session matches <code class="text-cf-orange">${idPreview}…</code></p>`
@@ -4690,7 +4686,7 @@ function brandedPostcardNotFound(c: Context<{ Bindings: Env }>, id?: string) {
 			"Postcard not found",
 			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 				<div class="text-center max-w-xl">
-					<div class="text-6xl mb-6">🗽</div>
+					<div class="text-6xl mb-6">${emptyEmoji}</div>
 					<h1 class="text-3xl font-bold mb-3">We couldn't find that postcard</h1>
 					${previewHtml}
 					<p class="text-white/50 text-sm">
@@ -4727,6 +4723,7 @@ function brandedPostcardNotFound(c: Context<{ Bindings: Env }>, id?: string) {
  * /api/run-img is already public for `runs/` keys. No auth gate.
  */
 app.get("/p/:id", async (c) => {
+	const { event } = await getDefaultEventCtx(c.env);
 	const id = c.req.param("id");
 	const isShortSlug = /^[a-z2-9]{6,16}$/.test(id);
 	const isUuid = UUID_RE.test(id);
@@ -4736,7 +4733,7 @@ app.get("/p/:id", async (c) => {
 
 	// ---- Malformed id — branded 404 ----
 	if (!isShortSlug && !isUuid) {
-		return brandedPostcardNotFound(c, id);
+		return brandedPostcardNotFound(c, id, event.empty_state_emoji);
 	}
 
 	// ---- Legacy short slug (older sample postcards). Not a real session. ----
@@ -4782,7 +4779,7 @@ app.get("/p/:id", async (c) => {
 
 	// ---- Not found in D1 ----
 	if (!row) {
-		return brandedPostcardNotFound(c, id);
+		return brandedPostcardNotFound(c, id, event.empty_state_emoji);
 	}
 
 	// ---- Still in progress (workflow hasn't reached `store` yet) ----
@@ -4834,7 +4831,7 @@ app.get("/p/:id", async (c) => {
 	}
 
 	// ---- Happy path: completed session with a postcard ----
-	const sceneName = row.scene_name ?? "NYC scene";
+	const sceneName = row.scene_name ?? "Scene";
 	const postcardKey = row.postcard_key;
 	const postcardSrc = `/api/run-img?key=${encodeURIComponent(postcardKey)}`;
 	const downloadSrc = `/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`;
@@ -4848,7 +4845,7 @@ app.get("/p/:id", async (c) => {
 				year: "numeric",
 				hour: "numeric",
 				minute: "2-digit",
-				timeZone: "America/New_York",
+				timeZone: event.timezone,
 				timeZoneName: "short",
 			})
 		: "Just now";
@@ -4859,13 +4856,8 @@ app.get("/p/:id", async (c) => {
 			`<header class="absolute top-0 left-0 right-0 px-6 sm:px-8 py-6 flex items-center justify-between z-10">
 				<a href="/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
 					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
-					<span>Cloudflare &middot; NY Tech Week 2026</span>
+					<span>Cloudflare &middot; ${escapeAttr(event.name)}</span>
 				</a>
-				<div class="hidden sm:flex items-center gap-3 text-2xl font-black leading-none">
-					<span>I</span>
-					<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-6 w-auto drop-shadow-[0_0_16px_rgba(246,130,31,0.6)]" />
-					<span>NY</span>
-				</div>
 			</header>
 
 			<main class="min-h-screen flex flex-col items-center px-4 sm:px-6 pt-24 pb-16">
@@ -5108,7 +5100,7 @@ app.post("/api/p/:id/email", async (c) => {
 	// retried from the admin dashboard (Phase 10).
 	const origin = new URL(c.req.url).origin;
 	const postcardKey = session.postcard_key;
-	const sceneName = session.scene_name ?? "NYC scene";
+	const sceneName = session.scene_name ?? "Scene";
 	c.executionCtx.waitUntil(
 		sendPostcardEmail(c.env, {
 			to: email,
