@@ -6,7 +6,8 @@ import {
 
 import { moderateImage, type ModerationVerdict } from "../lib/moderation";
 import { runReplicate } from "../lib/replicate";
-import { loadSceneById } from "../lib/scenes";
+import { loadEventContext } from "../lib/event-ctx";
+import { findScene } from "../lib/scenes";
 import { buildPostcard } from "../lib/postcard";
 import { trackEvent } from "../lib/analytics";
 import type {
@@ -19,11 +20,16 @@ import type {
  * The selfie itself isn't passed inline — it's uploaded to R2 first and
  * referenced by key, because workflow payloads must be JSON-serializable
  * and stay small.
+ *
+ * `eventId` scopes the session to a specific event (multi-event support).
+ * Optional for back-compat with the skeleton test endpoint that doesn't
+ * have an event context; real kiosk runs always pass it.
  */
 export type CaricaturePayload = {
 	sessionId: string;
+	eventId?: string; // events.id — multi-event scoping
 	selfieKey?: string; // R2 key under the BUCKET binding
-	sceneId?: string; // id matching seed/scenes.json
+	sceneId?: string; // id matching scenes.id within the event
 	publicOrigin?: string; // e.g. https://nyc-caricature-booth.examples.workers.dev
 	note?: string;
 };
@@ -70,7 +76,7 @@ export type StoreStepOutput = {
  */
 export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayload> {
 	async run(event: WorkflowEvent<CaricaturePayload>, step: WorkflowStep) {
-		const { sessionId, selfieKey, sceneId, publicOrigin, note } = event.payload;
+		const { sessionId, eventId, selfieKey, sceneId, publicOrigin, note } = event.payload;
 		const instanceId = event.instanceId;
 
 		// Hello step is preserved for now so the skeleton test endpoint still works.
@@ -158,7 +164,16 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					timeout: "2 minutes",
 				},
 				async () => {
-				const scene = await loadSceneById(this.env, sceneId);
+				// Resolve the scene from the event's D1-backed config. eventId
+				// is required for any real run; only the skeleton test path
+				// (no selfieKey/no sceneId) reaches the workflow without one.
+				if (!eventId) {
+					throw new Error("eventId is required when sceneId is set");
+				}
+				const eventCtx = await loadEventContext(this.env, eventId);
+				if (!eventCtx) throw new Error(`event not found or inactive: ${eventId}`);
+				const scene = findScene(eventCtx.scenes, sceneId);
+				if (!scene) throw new Error(`unknown scene_id: ${sceneId} for event ${eventId}`);
 
 				const obj = await this.env.BUCKET.get(selfieKey);
 				if (!obj) throw new Error(`selfie not found in R2: ${selfieKey}`);
@@ -232,10 +247,21 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				const origin = publicOrigin?.replace(/\/$/, "") ?? "";
 				const postcardUrl = `${origin}/p/${sessionId}`;
 
+				// Load the event so buildPostcard can pick the right watermark
+				// (event.watermark_image_key from R2, falling back to bundled).
+				// We re-load inside the step rather than passing the EventRecord
+				// through the workflow payload so admin edits to watermark/key
+				// take effect on the very next session — no stale snapshot.
+				const eventCtx = eventId
+					? await loadEventContext(this.env, eventId)
+					: null;
+
 				// QR removed from printed postcard (step 6.6). Users scan the
 				// QR on the kiosk done screen instead; the printed postcard is
 				// just caricature + watermark.
-				const response = await buildPostcard(this.env, caricature.body);
+				const response = await buildPostcard(this.env, caricature.body, {
+					event: eventCtx?.event,
+				});
 					if (!response.ok)
 						throw new Error(`postcard build failed: HTTP ${response.status}`);
 					const postcardBytes = new Uint8Array(await response.arrayBuffer());
@@ -277,11 +303,15 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					// /api/kiosk/print. Workflow's only D1 write is the session
 					// upsert. Attendees who only want the digital copy never
 					// produce a print_jobs row.
+					//
+					// event_id scopes the session to its event so multi-event
+					// admin queries and gallery feeds can filter by event.
 					const sessionResult = await this.env.DB.prepare(
 						`INSERT INTO sessions
-							(id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
-						 VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
+							(id, event_id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
+						 VALUES (?, ?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
 						 ON CONFLICT(id) DO UPDATE SET
+							event_id=excluded.event_id,
 							status='completed',
 							scene_id=excluded.scene_id,
 							scene_name=excluded.scene_name,
@@ -294,6 +324,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					)
 						.bind(
 							sessionId,
+							eventId ?? null,
 							generate.sceneId,
 							generate.sceneName,
 							selfieKey,
@@ -336,13 +367,14 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 			// so it works regardless of whether the session row already exists.
 			try {
 				await this.env.DB.prepare(
-					`INSERT INTO sessions (id, status, error_msg, scene_id)
-					 VALUES (?, 'errored', ?, ?)
+					`INSERT INTO sessions (id, event_id, status, error_msg, scene_id)
+					 VALUES (?, ?, 'errored', ?, ?)
 					 ON CONFLICT(id) DO UPDATE SET
+						event_id=COALESCE(sessions.event_id, excluded.event_id),
 						status='errored',
 						error_msg=excluded.error_msg`,
 				)
-					.bind(sessionId, message, sceneId ?? null)
+					.bind(sessionId, eventId ?? null, message, sceneId ?? null)
 					.run();
 			} catch (dbErr) {
 				console.warn(

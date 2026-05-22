@@ -10,6 +10,7 @@
  */
 
 import QRCode from "qrcode";
+import type { EventRecord } from "./types";
 
 // ----- Postcard dimensions (4x6 inches @ 300 DPI, landscape) -----
 export const POSTCARD_W = 1800;
@@ -193,21 +194,23 @@ export function qrPng(text: string, sizePx: number): Uint8Array {
 /**
  * Builds a print-ready 1800x1200 postcard JPEG from any base image:
  *  - resizes/crops the base image to fill 1800x1200 (fit: cover)
- *  - composites the "I [logo] NY" watermark in the bottom-right corner
+ *  - composites the event-specific watermark in the bottom-right corner
+ *    (event.watermark_image_key from R2, falling back to public/watermark.png)
  *  - optionally composites a QR code in the bottom-left corner
  *
  * Returns the Response from the Cloudflare Images binding directly.
+ *
+ * The `event` arg is optional for back-compat with test endpoints that don't
+ * have a full EventRecord on hand. When omitted (or when the event has no
+ * watermark_image_key), we fall back to the bundled public/watermark.png
+ * asset — the original behavior before multi-event support.
  */
 export async function buildPostcard(
 	env: Env,
 	baseStream: ReadableStream,
-	opts: { qrUrl?: string } = {},
+	opts: { qrUrl?: string; event?: EventRecord } = {},
 ): Promise<Response> {
-	const wmReq = new Request("http://internal/watermark.png");
-	const wmResp = await env.ASSETS.fetch(wmReq);
-	if (!wmResp.ok || !wmResp.body) {
-		throw new Error("watermark asset not available");
-	}
+	const watermarkBody = await loadWatermarkBody(env, opts.event);
 
 	let pipeline = env.IMAGES.input(baseStream).transform({
 		width: POSTCARD_W,
@@ -233,7 +236,7 @@ export async function buildPostcard(
 	}
 
 	pipeline = pipeline.draw(
-		env.IMAGES.input(wmResp.body).transform({ width: POSTCARD_WATERMARK_W }),
+		env.IMAGES.input(watermarkBody).transform({ width: POSTCARD_WATERMARK_W }),
 		{
 			bottom: POSTCARD_WATERMARK_MARGIN,
 			right: POSTCARD_WATERMARK_MARGIN,
@@ -243,4 +246,34 @@ export async function buildPostcard(
 
 	const result = await pipeline.output({ format: "image/jpeg" });
 	return result.response();
+}
+
+/**
+ * Resolves the watermark image body to composite onto the postcard.
+ *
+ * Priority:
+ *   1. event.watermark_image_key (R2) — uploaded via the admin UI
+ *   2. public/watermark.png (ASSETS) — bundled default Cloudflare wordmark
+ *
+ * The R2 lookup is best-effort: if the key is set but the object is missing
+ * (e.g. someone trashed it manually) we log and fall through to the bundled
+ * asset rather than failing the whole postcard build.
+ */
+async function loadWatermarkBody(
+	env: Env,
+	event: EventRecord | undefined,
+): Promise<ReadableStream> {
+	if (event?.watermark_image_key) {
+		const obj = await env.BUCKET.get(event.watermark_image_key);
+		if (obj?.body) return obj.body;
+		console.warn(
+			`[postcard] event '${event.id}' references missing watermark R2 key '${event.watermark_image_key}', falling back to bundled asset`,
+		);
+	}
+
+	const wmResp = await env.ASSETS.fetch(new Request("http://internal/watermark.png"));
+	if (!wmResp.ok || !wmResp.body) {
+		throw new Error("watermark asset not available");
+	}
+	return wmResp.body;
 }

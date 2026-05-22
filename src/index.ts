@@ -1148,11 +1148,12 @@ app.post("/api/admin/reprint/:id", async (c) => {
 	}
 
 	const session = await c.env.DB.prepare(
-		"SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
+		"SELECT id, event_id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
 	)
 		.bind(id)
 		.first<{
 			id: string;
+			event_id: string | null;
 			status: string | null;
 			postcard_key: string | null;
 			scene_name: string | null;
@@ -1170,11 +1171,11 @@ app.post("/api/admin/reprint/:id", async (c) => {
 	const sceneName = session.scene_name ?? "Scene";
 
 	const result = await c.env.DB.prepare(
-		`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO print_jobs (session_id, event_id, postcard_key, postcard_url, scene_name)
+		 VALUES (?, ?, ?, ?, ?)
 		 RETURNING id`,
 	)
-		.bind(id, session.postcard_key, postcardUrl, sceneName)
+		.bind(id, session.event_id, session.postcard_key, postcardUrl, sceneName)
 		.first<{ id: string }>();
 
 	if (!result) {
@@ -1457,15 +1458,15 @@ app.post("/api/kiosk/start", async (c) => {
 		return c.json({ error: "missing sceneId" }, 400);
 	}
 
-	// Validate sceneId against KV.
-	let scenes: Scene[];
-	try {
-		scenes = await loadScenes(c.env);
-	} catch (err) {
-		return c.json({ error: "scenes unavailable", details: String(err) }, 500);
-	}
-	if (!scenes.some((s) => s.id === sceneId)) {
-		return c.json({ error: `unknown sceneId: ${sceneId}` }, 400);
+	// Load the event context so we can (a) validate sceneId against the
+	// event's actual scenes, not the bundled JSON, and (b) tag the new
+	// workflow run with eventId for D1 inserts downstream.
+	const eventCtx = await getDefaultEventCtx(c.env);
+	if (!eventCtx.scenes.some((s) => s.id === sceneId)) {
+		return c.json(
+			{ error: `unknown sceneId: ${sceneId} for event ${eventCtx.event.id}` },
+			400,
+		);
 	}
 
 	// Validate the selfie actually exists in R2. head() is cheap and
@@ -1479,6 +1480,7 @@ app.post("/api/kiosk/start", async (c) => {
 	const instance = await c.env.CARICATURE_WORKFLOW.create({
 		params: {
 			sessionId,
+			eventId: eventCtx.event.id,
 			selfieKey,
 			sceneId,
 			publicOrigin,
@@ -1522,10 +1524,16 @@ app.post("/api/kiosk/print", async (c) => {
 
 	// The session must be completed and have a postcard before we can print.
 	const session = await c.env.DB.prepare(
-		"SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
+		"SELECT id, event_id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
 	)
 		.bind(sessionId)
-		.first<{ id: string; status: string | null; postcard_key: string | null; scene_name: string | null }>();
+		.first<{
+			id: string;
+			event_id: string | null;
+			status: string | null;
+			postcard_key: string | null;
+			scene_name: string | null;
+		}>();
 
 	if (!session) {
 		return c.json({ error: "session not found" }, 404);
@@ -1565,11 +1573,11 @@ app.post("/api/kiosk/print", async (c) => {
 	const sceneName = session.scene_name ?? "Scene";
 
 	const insertResult = await c.env.DB.prepare(
-		`INSERT INTO print_jobs (session_id, postcard_key, postcard_url, scene_name)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO print_jobs (session_id, event_id, postcard_key, postcard_url, scene_name)
+		 VALUES (?, ?, ?, ?, ?)
 		 RETURNING id`,
 	)
-		.bind(sessionId, session.postcard_key, postcardUrl, sceneName)
+		.bind(sessionId, session.event_id, session.postcard_key, postcardUrl, sceneName)
 		.first<{ id: string }>();
 
 	if (!insertResult) {
