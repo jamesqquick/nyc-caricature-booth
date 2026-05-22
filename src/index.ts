@@ -1783,9 +1783,6 @@ app.get("/kiosk", (c) => {
 						class="mt-16 inline-flex items-center justify-center rounded-full bg-cf-orange px-16 py-7 text-2xl font-bold text-black shadow-[0_0_60px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
 						Tap to start
 					</a>
-					<p class="mt-6 text-xs uppercase tracking-[0.3em] text-white/40">
-						Takes about 30 seconds
-					</p>
 				</section>
 
 				<footer class="px-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
@@ -1990,7 +1987,7 @@ app.get("/kiosk/capture", (c) => {
 						shutterRow.classList.add("hidden");
 						confirmRow.classList.remove("hidden");
 						confirmRow.classList.add("flex");
-						hint.textContent = "Looks good? Tap 'Use this photo' to continue.";
+						hint.textContent = "";
 					}, "image/jpeg", 0.92);
 				}
 
@@ -2377,7 +2374,7 @@ app.get("/kiosk/status/:instanceId", (c) => {
 				<section id="status-working" class="flex-1 min-h-0 flex flex-col items-center justify-center px-6 sm:px-8 gap-8">
 					<div class="text-center max-w-md">
 						<h1 id="status-headline" class="text-[clamp(1.75rem,5vw,2.5rem)] font-bold leading-tight">Making your postcard</h1>
-						<p id="status-subhead" class="mt-3 text-sm sm:text-base text-white/60">Hang tight — this usually takes about 30 seconds.</p>
+						<p id="status-subhead" class="mt-3 text-sm sm:text-base text-white/60"></p>
 					</div>
 
 					<!--
@@ -2389,7 +2386,7 @@ app.get("/kiosk/status/:instanceId", (c) => {
 					<ol id="status-steps" class="w-full max-w-md flex flex-col gap-3 sm:gap-4">
 						${[
 							{ key: "check", label: "Checking your photo" },
-							{ key: "paint", label: "Painting your caricature", hint: "This is the slow one — about 20 seconds." },
+							{ key: "paint", label: "Painting your caricature" },
 							{ key: "frame", label: "Adding the postcard frame" },
 							{ key: "ready", label: "Your postcard is ready" },
 						]
@@ -2454,9 +2451,9 @@ app.get("/kiosk/status/:instanceId", (c) => {
 					done: "Your postcard is ready",
 				};
 				const STATUS_TO_SUBHEAD = {
-					queued: "Hang tight — this usually takes about 30 seconds.",
+					queued: "",
 					moderating: "Making sure your photo is good to go.",
-					generating: "AI is painting your caricature — this is the slow part.",
+					generating: "",
 					compositing: "Watermark + QR code coming together.",
 					done: "Hold on while we hand it off…",
 				};
@@ -2677,11 +2674,7 @@ app.get("/kiosk/done", (c) => {
 		kioskPage(
 			"Your postcard is ready",
 			`<main id="done-root" class="min-h-[100dvh] w-full flex flex-col" style="touch-action:manipulation;">
-				<header class="shrink-0 px-6 pt-4 sm:pt-6 pb-2 flex items-center justify-between">
-					<div class="flex items-center gap-2 text-white/50 text-xs uppercase tracking-[0.25em]">
-						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-						<span>I 🧡 NY · Caricature Booth</span>
-					</div>
+				<header class="shrink-0 px-6 pt-4 sm:pt-6 pb-2 flex items-center justify-end">
 					<!-- QR code top-right — always visible for scanning -->
 					<div class="flex flex-col items-center gap-1">
 						${qrSrc

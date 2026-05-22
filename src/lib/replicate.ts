@@ -67,7 +67,7 @@ export async function runReplicate(
 				input: {
 					prompt: opts.prompt,
 					image_input: [selfieDataUrl],
-					aspect_ratio: "3:4",
+					aspect_ratio: "3:2",
 					output_format: "jpg",
 				},
 			}),

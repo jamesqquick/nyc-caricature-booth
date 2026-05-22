@@ -1,7 +1,13 @@
 /**
- * Scene definitions live in KV under the "scenes" key.
- * Seeded from `seed/scenes.json`. Shared between test endpoints and workflow.
+ * Scene definitions are bundled into the worker at build time from
+ * `seed/scenes.json`. KV is no longer the source of truth — edit the
+ * JSON file and redeploy to update prompts.
+ *
+ * The functions remain async-compatible (callers `await` them) and still
+ * accept `env` for signature compatibility, even though neither is needed.
  */
+
+import scenesSeed from "../../seed/scenes.json";
 
 export type Scene = {
 	id: string;
@@ -11,15 +17,14 @@ export type Scene = {
 	prompt: string;
 };
 
-export async function loadScenes(env: Env): Promise<Scene[]> {
-	const raw = await env.CONFIG.get("scenes");
-	if (!raw) throw new Error("scenes not configured in KV");
-	return JSON.parse(raw) as Scene[];
+const SCENES = scenesSeed as Scene[];
+
+export async function loadScenes(_env: Env): Promise<Scene[]> {
+	return SCENES;
 }
 
-export async function loadSceneById(env: Env, sceneId: string): Promise<Scene> {
-	const scenes = await loadScenes(env);
-	const scene = scenes.find((s) => s.id === sceneId);
+export async function loadSceneById(_env: Env, sceneId: string): Promise<Scene> {
+	const scene = SCENES.find((s) => s.id === sceneId);
 	if (!scene) throw new Error(`unknown scene_id: ${sceneId}`);
 	return scene;
 }
