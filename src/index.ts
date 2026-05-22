@@ -1763,11 +1763,6 @@ app.get("/kiosk", async (c) => {
 		kioskPage(
 			`${renderWordmarkText(event)} — Tap to start`,
 			`<main class="h-full w-full flex flex-col">
-				<header class="px-8 pt-10 pb-4 flex items-center gap-3 text-white/70">
-					<img src="/cloudflare-logo.png" alt="" class="h-6 w-6" />
-					<span class="text-xs uppercase tracking-[0.25em]">${escapeAttr(event.kiosk_idle_subhead)}</span>
-				</header>
-
 				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
 					${renderHero(event, "lg")}
 
@@ -2362,11 +2357,7 @@ app.get("/kiosk/status/:instanceId", async (c) => {
 		kioskPage(
 			"Making your postcard",
 			`<main id="status-root" class="min-h-[100dvh] w-full flex flex-col">
-				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<div class="flex items-center gap-2 text-white/50 text-xs uppercase tracking-[0.25em]">
-						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-						<span>${renderWordmarkText(event)} &middot; Caricature Booth</span>
-					</div>
+				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-end">
 					<div id="status-conn" class="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-white/30">
 						<span id="status-conn-dot" class="size-2 rounded-full bg-yellow-400 animate-pulse"></span>
 						<span id="status-conn-label">connecting…</span>
