@@ -1,63 +1,11 @@
 /**
- * Event context loader.
- *
- * Phase 0: returns a hardcoded NYC stub so handlers can begin consuming
- * EventContext without touching D1 yet. Phase 1 (migration) will swap
- * this to a real D1 query with KV caching.
+ * Event context loader — reads events + scenes from D1, caches in KV.
  */
 
 import type { EventContext, EventRecord, SceneRecord } from "./types";
-import scenesSeed from "../../seed/scenes.json";
 
 const KV_TTL_SECONDS = 60;
-
-// -----------------------------------------------------------------------
-// Hardcoded NYC event — replaced with D1 reads in Phase 1.
-// -----------------------------------------------------------------------
-
-const NYC_EVENT: EventRecord = {
-	id: "nyc-tech-week-2026",
-	name: "NY Tech Week 2026",
-	status: "active",
-
-	wordmark_text: "I 🧡 NY",
-	wordmark_image_key: null,
-	accent_color: "#f6821f",
-	watermark_image_key: null,
-	watermark_fallback_text: null,
-	empty_state_emoji: "🗽",
-
-	tagline: "Take a selfie, pick an iconic NYC scene, walk away with a printed postcard.",
-	kiosk_idle_subhead: "Cloudflare \u00b7 NY Tech Week 2026",
-	scene_picker_heading: "Pick your NYC scene",
-
-	scene_style_preamble: null,
-	scene_constraints: null,
-
-	timezone: "America/New_York",
-	privacy_email: "devrel@cloudflare.com",
-	public_url: "https://nyc-caricature-booth.examples.workers.dev",
-
-	created_at: Math.floor(Date.now() / 1000),
-	created_by: null,
-};
-
-const NYC_SCENES: SceneRecord[] = (scenesSeed as Array<{
-	id: string;
-	name: string;
-	emoji: string;
-	description: string;
-	prompt: string;
-}>).map((s, i) => ({
-	event_id: "nyc-tech-week-2026",
-	id: s.id,
-	name: s.name,
-	emoji: s.emoji,
-	description: s.description,
-	prompt: s.prompt,
-	sort_order: i,
-	is_active: 1,
-}));
+const KV_PREFIX = "event:";
 
 // -----------------------------------------------------------------------
 // Public API
@@ -67,41 +15,89 @@ const NYC_SCENES: SceneRecord[] = (scenesSeed as Array<{
  * Load an event and its active scenes. Returns null if the event doesn't
  * exist or is not active.
  *
- * Phase 0: ignores `eventId` and always returns the hardcoded NYC event.
- * Phase 1: reads from D1, caches in KV for KV_TTL_SECONDS.
+ * Reads from KV cache first; falls back to D1 and populates the cache.
  */
 export async function loadEventContext(
-	_env: Env,
-	_eventId: string,
+	env: Env,
+	eventId: string,
 ): Promise<EventContext | null> {
-	// Phase 0 stub — always returns NYC regardless of eventId
-	return {
-		event: NYC_EVENT,
-		scenes: NYC_SCENES.filter((s) => s.is_active),
-	};
+	const cacheKey = `${KV_PREFIX}${eventId}`;
+
+	// Try KV cache first
+	const cached = await env.CONFIG.get(cacheKey, "json");
+	if (cached) return cached as EventContext;
+
+	// Miss — query D1
+	const [eventRes, scenesRes] = await env.DB.batch([
+		env.DB.prepare(
+			`SELECT * FROM events WHERE id = ? AND status = 'active'`,
+		).bind(eventId),
+		env.DB.prepare(
+			`SELECT * FROM scenes WHERE event_id = ? AND is_active = 1 ORDER BY sort_order`,
+		).bind(eventId),
+	]);
+
+	const eventRow = eventRes.results[0] as EventRecord | undefined;
+	if (!eventRow) return null;
+
+	const scenes = (scenesRes.results ?? []) as SceneRecord[];
+
+	const ctx: EventContext = { event: eventRow, scenes };
+
+	// Populate cache (fire-and-forget)
+	env.CONFIG.put(cacheKey, JSON.stringify(ctx), {
+		expirationTtl: KV_TTL_SECONDS,
+	}).catch(() => {});
+
+	return ctx;
 }
 
 /**
  * Invalidate the KV cache for an event so the next request picks up
  * admin edits immediately.
- *
- * Phase 0: no-op (nothing is cached yet).
  */
 export async function invalidateEventCache(
-	_env: Env,
-	_eventId: string,
+	env: Env,
+	eventId: string,
 ): Promise<void> {
-	// Phase 0: no-op — KV caching comes in Phase 1
+	await env.CONFIG.delete(`${KV_PREFIX}${eventId}`);
 }
 
 /**
  * List all events (for the admin index / root page).
- *
- * Phase 0: returns a single-element array with the NYC event.
- * Phase 1: reads from D1.
+ * Not cached — admin-only, low frequency.
  */
-export async function listEvents(
-	_env: Env,
-): Promise<EventRecord[]> {
-	return [NYC_EVENT];
+export async function listEvents(env: Env): Promise<EventRecord[]> {
+	const { results } = await env.DB.prepare(
+		`SELECT * FROM events ORDER BY created_at DESC`,
+	).all<EventRecord>();
+	return results;
+}
+
+/**
+ * Load a single event record by ID (any status, not just active).
+ * Used by admin pages that need to edit draft/archived events.
+ */
+export async function loadEvent(
+	env: Env,
+	eventId: string,
+): Promise<EventRecord | null> {
+	const row = await env.DB.prepare(
+		`SELECT * FROM events WHERE id = ?`,
+	).bind(eventId).first<EventRecord>();
+	return row ?? null;
+}
+
+/**
+ * Load all scenes for an event (including inactive), ordered by sort_order.
+ * Used by admin scene editor.
+ */
+export async function loadAllScenes(
+	env: Env,
+	eventId: string,
+): Promise<SceneRecord[]> {
+	const { results } = await env.DB.prepare(
+		`SELECT * FROM scenes WHERE event_id = ? ORDER BY sort_order`,
+	).bind(eventId).all<SceneRecord>();
+	return results;
 }
