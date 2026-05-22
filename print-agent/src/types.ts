@@ -2,6 +2,7 @@
 export type PrintJob = {
 	id: string;
 	session_id: string;
+	event_id: string;
 	postcard_key: string;
 	postcard_url: string;
 	scene_name: string;
@@ -10,6 +11,7 @@ export type PrintJob = {
 
 export type AgentConfig = {
 	workerUrl: string;
+	eventId: string;
 	pollIntervalMs: number;
 	batchSize: number;
 };

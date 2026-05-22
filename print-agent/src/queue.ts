@@ -1,8 +1,8 @@
 import type { AgentConfig, PrintJob } from "./types.js";
 
-/** Fetch pending print jobs from the Worker. */
+/** Fetch pending print jobs from the Worker, scoped to the agent's event. */
 export async function fetchJobs(config: AgentConfig): Promise<PrintJob[]> {
-	const url = `${config.workerUrl}/api/print-agent/jobs?limit=${config.batchSize}`;
+	const url = `${config.workerUrl}/api/print-agent/jobs?limit=${config.batchSize}&eventId=${encodeURIComponent(config.eventId)}`;
 	const res = await fetch(url);
 
 	if (!res.ok) {
