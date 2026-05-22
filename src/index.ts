@@ -25,27 +25,76 @@ import {
 	loadAdminSessions,
 	loadAdminStats,
 } from "./lib/admin-data";
-import { loadEventContext } from "./lib/event-ctx";
+import { loadEventContext, listEvents } from "./lib/event-ctx";
 import type { EventContext } from "./lib/types";
 import { renderSceneOptions } from "./components/wordmark";
 // Bundled scenes seed — used by the admin "Re-seed scenes" control to push
 // the canonical scene definitions into KV without needing wrangler CLI.
 import scenesSeed from "../seed/scenes.json";
 
-/** Default event ID — used until Phase 3 adds /e/:eventId routing. */
+/** Default event ID — used for legacy route redirects. */
 const DEFAULT_EVENT_ID = "nyc-tech-week-2026";
 
-/** Load the default event context. Throws if the event doesn't exist in D1. */
-async function getDefaultEventCtx(env: Env): Promise<EventContext> {
-	const ctx = await loadEventContext(env, DEFAULT_EVENT_ID);
-	if (!ctx) throw new Error(`Default event '${DEFAULT_EVENT_ID}' not found in D1`);
-	return ctx;
-}
+// ---------------------------------------------------------------------------
+// Hono type augmentation for event-scoped routes
+// ---------------------------------------------------------------------------
+
+/**
+ * Variables set by the event middleware and available on c.get() / c.var
+ * inside the /e/:eventId sub-app.
+ */
+type EventVars = {
+	eventCtx: EventContext;
+	/** URL prefix for the current event, e.g. "/e/nyc-tech-week-2026" */
+	basePath: string;
+};
+
+type EventEnv = { Bindings: Env; Variables: EventVars };
+
+/** Shorthand for the event-scoped Hono context. */
+type EventCtx = Context<EventEnv>;
 
 export { CaricatureWorkflow } from "./workflows/caricature";
 export { SessionDO } from "./session/session";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ---------------------------------------------------------------------------
+// Event-scoped sub-app (/e/:eventId/*)
+//
+// Middleware loads EventContext from the :eventId URL param and 404s if the
+// event doesn't exist or isn't active. All user-facing routes live here;
+// admin, test, and utility routes stay on the root app.
+// ---------------------------------------------------------------------------
+
+const eventApp = new Hono<EventEnv>();
+
+eventApp.use("*", async (c, next) => {
+	const eventId = c.req.param("eventId");
+	if (!eventId) return c.notFound();
+	const ctx = await loadEventContext(c.env, eventId);
+	if (!ctx) {
+		return c.html(
+			page(
+				"Event not found",
+				`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
+					<div class="text-center max-w-xl">
+						<div class="text-6xl mb-6">🔍</div>
+						<h1 class="text-3xl font-bold mb-3">Event not found</h1>
+						<p class="text-white/60 mb-8">No active event matches <code class="text-cf-orange">${escapeAttr(eventId)}</code>.</p>
+						<a href="/" class="inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+							Browse events
+						</a>
+					</div>
+				</main>`,
+			),
+			404,
+		);
+	}
+	c.set("eventCtx", ctx);
+	c.set("basePath", `/e/${eventId}`);
+	await next();
+});
 
 // Postcard composition (constants, qrPng, encodePng, buildPostcard,
 // newPostcardId) lives in src/lib/postcard.ts so the workflow's composite
@@ -111,8 +160,9 @@ const kioskPage = (title: string, body: string) => `<!doctype html>
 	</body>
 </html>`;
 
-app.get("/", async (c) => {
-	const { event } = await getDefaultEventCtx(c.env);
+eventApp.get("/", async (c) => {
+	const { event } = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	return c.html(
 		page(
 			`${event.name} — AI Caricature Booth`,
@@ -127,7 +177,7 @@ app.get("/", async (c) => {
 						Built end-to-end on Cloudflare.
 					</p>
 
-					<a href="/kiosk"
+					<a href="${basePath}/kiosk"
 						class="mt-12 inline-flex items-center justify-center rounded-full bg-cf-orange px-10 py-4 text-base font-bold text-black shadow-[0_0_60px_rgba(246,130,31,0.35)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
 						Open the booth
 					</a>
@@ -192,7 +242,7 @@ app.get("/", async (c) => {
 
 			<footer class="px-6 sm:px-8 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
 				We don't store your photo after the event &middot;
-				<a href="/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
+				<a href="${basePath}/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
 			</footer>`,
 		),
 	);
@@ -1372,7 +1422,7 @@ app.delete("/api/admin/session/:id", async (c) => {
  * and pass them along to the scene picker (6.3) and workflow trigger (6.4).
  * POST /api/kiosk/selfie  (multipart: selfie=file)
  */
-app.post("/api/kiosk/selfie", async (c) => {
+eventApp.post("/api/kiosk/selfie", async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
@@ -1427,7 +1477,7 @@ app.post("/api/kiosk/selfie", async (c) => {
  * Body: { sessionId, selfieKey, sceneId }
  * Response: { ok, instanceId, sessionId, statusUrl }
  */
-app.post("/api/kiosk/start", async (c) => {
+eventApp.post("/api/kiosk/start", async (c) => {
 	let body: { sessionId?: unknown; selfieKey?: unknown; sceneId?: unknown };
 	try {
 		body = await c.req.json();
@@ -1461,7 +1511,7 @@ app.post("/api/kiosk/start", async (c) => {
 	// Load the event context so we can (a) validate sceneId against the
 	// event's actual scenes, not the bundled JSON, and (b) tag the new
 	// workflow run with eventId for D1 inserts downstream.
-	const eventCtx = await getDefaultEventCtx(c.env);
+	const eventCtx = c.get("eventCtx");
 	if (!eventCtx.scenes.some((s) => s.id === sceneId)) {
 		return c.json(
 			{ error: `unknown sceneId: ${sceneId} for event ${eventCtx.event.id}` },
@@ -1476,6 +1526,7 @@ app.post("/api/kiosk/start", async (c) => {
 		return c.json({ error: `selfie not found in R2: ${selfieKey}` }, 404);
 	}
 
+	const basePath = c.get("basePath");
 	const publicOrigin = new URL(c.req.url).origin;
 	const instance = await c.env.CARICATURE_WORKFLOW.create({
 		params: {
@@ -1488,7 +1539,7 @@ app.post("/api/kiosk/start", async (c) => {
 		},
 	});
 
-	const statusUrl = `/kiosk/status/${instance.id}?session=${sessionId}`;
+	const statusUrl = `${basePath}/kiosk/status/${instance.id}?session=${sessionId}`;
 	return c.json({
 		ok: true,
 		instanceId: instance.id,
@@ -1509,7 +1560,7 @@ app.post("/api/kiosk/start", async (c) => {
  *
  * POST /api/kiosk/print  body: { sessionId }
  */
-app.post("/api/kiosk/print", async (c) => {
+eventApp.post("/api/kiosk/print", async (c) => {
 	let body: { sessionId?: unknown };
 	try {
 		body = await c.req.json();
@@ -1606,7 +1657,7 @@ app.post("/api/kiosk/print", async (c) => {
  * GET /api/kiosk/print/:jobId/status
  * → { status: "pending" | "printing" | "printed" | "failed", printedAt?, errorMsg? }
  */
-app.get("/api/kiosk/print/:jobId/status", async (c) => {
+eventApp.get("/api/kiosk/print/:jobId/status", async (c) => {
 	const jobId = c.req.param("jobId");
 	if (!jobId) return c.json({ error: "missing jobId" }, 400);
 
@@ -1635,7 +1686,7 @@ app.get("/api/kiosk/print/:jobId/status", async (c) => {
  *
  * GET /api/kiosk/qr?url=<encoded>
  */
-app.get("/api/kiosk/qr", (c) => {
+eventApp.get("/api/kiosk/qr", (c) => {
 	const raw = c.req.query("url");
 	if (!raw) return c.json({ error: "missing url param" }, 400);
 
@@ -1670,13 +1721,14 @@ app.get("/api/kiosk/qr", (c) => {
  * TODO(legal): Have James send this copy to legal for review before NY Tech Week.
  * GET /privacy
  */
-app.get("/privacy", async (c) => {
-	const { event } = await getDefaultEventCtx(c.env);
+eventApp.get("/privacy", async (c) => {
+	const { event } = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	return c.html(
 		page(
 			`Privacy — ${event.name} Caricature Booth`,
 			`<header class="px-6 sm:px-8 py-6 flex items-center justify-between">
-				<a href="/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
+				<a href="${basePath}/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
 					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
 					<span>Cloudflare &middot; ${escapeAttr(event.name)}</span>
 				</a>
@@ -1763,8 +1815,9 @@ app.get("/privacy", async (c) => {
  * the booth. Big visual, one obvious action.
  * GET /kiosk
  */
-app.get("/kiosk", async (c) => {
-	const { event } = await getDefaultEventCtx(c.env);
+eventApp.get("/kiosk", async (c) => {
+	const { event } = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	return c.html(
 		kioskPage(
 			`${event.name} — Tap to start`,
@@ -1777,14 +1830,14 @@ app.get("/kiosk", async (c) => {
 						${escapeAttr(event.tagline)}
 					</p>
 
-					<a href="/kiosk/capture"
+					<a href="${basePath}/kiosk/capture"
 						class="mt-16 inline-flex items-center justify-center rounded-full bg-cf-orange px-16 py-7 text-2xl font-bold text-black shadow-[0_0_60px_rgba(246,130,31,0.45)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
 						Tap to start
 					</a>
 				</section>
 
 				<footer class="px-8 pt-12 pb-10 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
-					We don't store your photo after the event · <a href="/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
+					We don't store your photo after the event · <a href="${basePath}/privacy" class="underline underline-offset-2 hover:text-white/50">Privacy</a>
 				</footer>
 			</main>`,
 		),
@@ -1803,13 +1856,14 @@ app.get("/kiosk", async (c) => {
  * { sessionId, selfieKey } in sessionStorage, navigates to /kiosk/scene.
  * GET /kiosk/capture
  */
-app.get("/kiosk/capture", (c) => {
+eventApp.get("/kiosk/capture", (c) => {
+	const basePath = c.get("basePath");
 	return c.html(
 		kioskPage(
 			"Capture your selfie",
 			`<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<a href="/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
+					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
 					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 1 of 3 · Selfie</span>
 					<span class="w-12"></span>
 				</header>
@@ -1871,13 +1925,14 @@ app.get("/kiosk/capture", (c) => {
 					</div>
 					<p id="cap-status" class="mt-2 sm:mt-4 text-center text-[11px] sm:text-xs text-white/40 min-h-[1rem]"></p>
 					<p class="mt-2 text-center text-[10px] uppercase tracking-[0.2em] text-white/25">
-						We don't store your photo after the event · <a href="/privacy" class="underline underline-offset-2 hover:text-white/40">Privacy</a>
+						We don't store your photo after the event · <a href="${basePath}/privacy" class="underline underline-offset-2 hover:text-white/40">Privacy</a>
 					</p>
 				</footer>
 			</main>
 
 			<script>
 			(function () {
+				const basePath = ${JSON.stringify(basePath)};
 				const video = document.getElementById("cap-video");
 				const preview = document.getElementById("cap-preview");
 				const overlay = document.getElementById("cap-overlay");
@@ -1913,7 +1968,7 @@ app.get("/kiosk/capture", (c) => {
 							'<div class="size-16 rounded-full border-2 border-red-400/30 bg-red-500/10 flex items-center justify-center text-2xl mb-4" aria-hidden="true">\u26a0\ufe0f</div>' +
 							'<div class="text-xl font-semibold">Camera not supported</div>' +
 							'<p class="mt-2 text-sm text-white/60 max-w-xs">This browser can\\'t access the camera. Try Safari on iPad or Chrome on desktop.</p>' +
-							'<a href="/kiosk" class="mt-6 inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition">\u2190 Back to start</a>'
+							'<a href="' + basePath + '/kiosk" class="mt-6 inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition">\u2190 Back to start</a>'
 						);
 						return;
 					}
@@ -1944,7 +1999,7 @@ app.get("/kiosk/capture", (c) => {
 								: "Make sure no other app is using the camera, then tap Retry.") +
 							'</p>' +
 							'<button id="cap-retry-perms" class="mt-6 inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition">Retry permissions</button>' +
-							'<a href="/kiosk" class="mt-3 text-sm text-white/50 hover:text-white underline underline-offset-4">\u2190 Back to start</a>'
+							'<a href="' + basePath + '/kiosk" class="mt-3 text-sm text-white/50 hover:text-white underline underline-offset-4">\u2190 Back to start</a>'
 						);
 						// Wire the retry button to re-call startCamera.
 						var retryPerms = document.getElementById("cap-retry-perms");
@@ -2013,7 +2068,7 @@ app.get("/kiosk/capture", (c) => {
 					try {
 						const fd = new FormData();
 						fd.append("selfie", capturedBlob, "selfie.jpg");
-						const r = await fetch("/api/kiosk/selfie", { method: "POST", body: fd });
+						const r = await fetch(basePath + "/api/kiosk/selfie", { method: "POST", body: fd });
 						const j = await r.json();
 						if (!r.ok || !j.ok) throw new Error(j.error || "upload failed");
 						sessionStorage.setItem("kiosk:selfie", JSON.stringify({
@@ -2023,7 +2078,7 @@ app.get("/kiosk/capture", (c) => {
 							capturedAt: Date.now(),
 						}));
 						statusEl.textContent = "✓ Uploaded. Pick a scene next…";
-						window.location.href = "/kiosk/scene";
+						window.location.href = basePath + "/kiosk/scene";
 					} catch (err) {
 						console.error(err);
 						statusEl.textContent = "✗ " + (err && err.message ? err.message : String(err));
@@ -2060,8 +2115,9 @@ app.get("/kiosk/capture", (c) => {
  * — no client fetch round trip on the iPad.
  * GET /kiosk/scene
  */
-app.get("/kiosk/scene", async (c) => {
-	const eventCtx = await getDefaultEventCtx(c.env);
+eventApp.get("/kiosk/scene", async (c) => {
+	const eventCtx = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	let scenes: Scene[];
 	try {
 		scenes = eventCtx.scenes;
@@ -2073,7 +2129,7 @@ app.get("/kiosk/scene", async (c) => {
 				`<main class="min-h-[100dvh] w-full flex flex-col items-center justify-center px-8 text-center">
 					<div class="text-2xl font-semibold text-red-300">Scenes unavailable</div>
 					<p class="mt-3 text-sm text-white/60 max-w-md">${String(err)}</p>
-					<a href="/kiosk" class="mt-8 text-sm text-white/60 hover:text-white underline">← Back to start</a>
+					<a href="${basePath}/kiosk" class="mt-8 text-sm text-white/60 hover:text-white underline">← Back to start</a>
 				</main>`,
 			),
 			500,
@@ -2100,7 +2156,7 @@ app.get("/kiosk/scene", async (c) => {
 			"Pick a scene",
 			`<main id="scene-root" class="min-h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<a href="/kiosk/capture" class="text-sm text-white/50 hover:text-white">← Retake selfie</a>
+					<a href="${basePath}/kiosk/capture" class="text-sm text-white/50 hover:text-white">← Retake selfie</a>
 					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 2 of 3 · Scene</span>
 					<span class="w-24"></span>
 				</header>
@@ -2127,6 +2183,7 @@ app.get("/kiosk/scene", async (c) => {
 			</main>
 			<script>
 			(function () {
+				const basePath = ${JSON.stringify(basePath)};
 				const grid = document.getElementById("scene-grid");
 				const statusEl = document.getElementById("scene-status");
 
@@ -2135,7 +2192,7 @@ app.get("/kiosk/scene", async (c) => {
 				// etc.) — bounce them back to capture.
 				const raw = sessionStorage.getItem("kiosk:selfie");
 				if (!raw) {
-					window.location.replace("/kiosk/capture");
+					window.location.replace(basePath + "/kiosk/capture");
 					return;
 				}
 				let selfie;
@@ -2145,7 +2202,7 @@ app.get("/kiosk/scene", async (c) => {
 				} catch (err) {
 					console.error("bad kiosk:selfie payload:", err);
 					sessionStorage.removeItem("kiosk:selfie");
-					window.location.replace("/kiosk/capture");
+					window.location.replace(basePath + "/kiosk/capture");
 					return;
 				}
 
@@ -2173,7 +2230,7 @@ app.get("/kiosk/scene", async (c) => {
 						sceneEmoji: sceneEmoji,
 						sceneChosenAt: Date.now(),
 					})));
-					window.location.href = "/kiosk/review";
+					window.location.href = basePath + "/kiosk/review";
 				});
 			})();
 			</script>`,
@@ -2195,14 +2252,15 @@ app.get("/kiosk/scene", async (c) => {
  * page back-button doesn't accidentally re-trigger the workflow.
  * GET /kiosk/review
  */
-app.get("/kiosk/review", async (c) => {
-	const { event } = await getDefaultEventCtx(c.env);
+eventApp.get("/kiosk/review", async (c) => {
+	const { event } = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	return c.html(
 		kioskPage(
 			"Review your postcard",
 			`<main class="min-h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<a href="/kiosk/scene" class="text-sm text-white/50 hover:text-white">← Pick different scene</a>
+					<a href="${basePath}/kiosk/scene" class="text-sm text-white/50 hover:text-white">← Pick different scene</a>
 					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 3 of 3 · Review</span>
 					<span class="w-32"></span>
 				</header>
@@ -2245,6 +2303,7 @@ app.get("/kiosk/review", async (c) => {
 			</main>
 			<script>
 			(function () {
+				const basePath = ${JSON.stringify(basePath)};
 				const selfieEl = document.getElementById("rev-selfie");
 				const emojiEl = document.getElementById("rev-scene-emoji");
 				const nameEl = document.getElementById("rev-scene-name");
@@ -2253,7 +2312,7 @@ app.get("/kiosk/review", async (c) => {
 
 				const raw = sessionStorage.getItem("kiosk:selfie");
 				if (!raw) {
-					window.location.replace("/kiosk/capture");
+					window.location.replace(basePath + "/kiosk/capture");
 					return;
 				}
 				let data;
@@ -2262,11 +2321,11 @@ app.get("/kiosk/review", async (c) => {
 					if (!data || !data.sessionId || !data.selfieKey) throw new Error("incomplete payload");
 				} catch (err) {
 					sessionStorage.removeItem("kiosk:selfie");
-					window.location.replace("/kiosk/capture");
+					window.location.replace(basePath + "/kiosk/capture");
 					return;
 				}
 				if (!data.sceneId) {
-					window.location.replace("/kiosk/scene");
+					window.location.replace(basePath + "/kiosk/scene");
 					return;
 				}
 
@@ -2283,7 +2342,7 @@ app.get("/kiosk/review", async (c) => {
 					goBtn.disabled = true;
 					statusEl.textContent = "Starting your postcard…";
 					try {
-						const r = await fetch("/api/kiosk/start", {
+						const r = await fetch(basePath + "/api/kiosk/start", {
 							method: "POST",
 							headers: { "content-type": "application/json" },
 							body: JSON.stringify({
@@ -2332,8 +2391,9 @@ app.get("/kiosk/review", async (c) => {
  *
  * GET /kiosk/status/:instanceId?session=<sid>
  */
-app.get("/kiosk/status/:instanceId", async (c) => {
-	const { event } = await getDefaultEventCtx(c.env);
+eventApp.get("/kiosk/status/:instanceId", async (c) => {
+	const { event } = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	const instanceId = c.req.param("instanceId");
 	if (!UUID_RE.test(instanceId)) return c.notFound();
 	const sessionFromQs = c.req.query("session");
@@ -2349,7 +2409,7 @@ app.get("/kiosk/status/:instanceId", async (c) => {
 				`<main class="min-h-[100dvh] w-full flex flex-col items-center justify-center px-8 text-center gap-6">
 					<div class="text-2xl font-semibold text-red-300">Missing session id</div>
 					<p class="text-sm text-white/60 max-w-md">This page can't track a postcard without ?session=&lt;id&gt;.</p>
-					<a href="/kiosk" class="inline-flex items-center justify-center rounded-full bg-cf-orange px-10 py-4 text-base font-bold text-black hover:bg-cf-orange-dark transition">Start over</a>
+					<a href="${basePath}/kiosk" class="inline-flex items-center justify-center rounded-full bg-cf-orange px-10 py-4 text-base font-bold text-black hover:bg-cf-orange-dark transition">Start over</a>
 				</main>`,
 			),
 			400,
@@ -2419,6 +2479,7 @@ app.get("/kiosk/status/:instanceId", async (c) => {
 			</main>
 			<script>
 			(function () {
+				const basePath = ${JSON.stringify(basePath)};
 				const sessionId = ${JSON.stringify(sessionId)};
 				const stepsRoot = document.getElementById("status-steps");
 				const headlineEl = document.getElementById("status-headline");
@@ -2523,7 +2584,7 @@ app.get("/kiosk/status/:instanceId", async (c) => {
 					headlineEl.textContent = STATUS_TO_HEADLINE.done;
 					subheadEl.textContent = STATUS_TO_SUBHEAD.done;
 					setTimeout(function () {
-						window.location.href = "/kiosk/done?session=" + encodeURIComponent(sid);
+						window.location.href = basePath + "/kiosk/done?session=" + encodeURIComponent(sid);
 					}, 500);
 				}
 
@@ -2566,7 +2627,7 @@ app.get("/kiosk/status/:instanceId", async (c) => {
 				retryBtn.addEventListener("click", function () {
 					try { sessionStorage.removeItem("kiosk:selfie"); } catch (e) { /* ignore */ }
 					try { sessionStorage.removeItem("kiosk:done"); } catch (e) { /* ignore */ }
-					window.location.href = "/kiosk";
+					window.location.href = basePath + "/kiosk";
 				});
 
 				// ----- WebSocket -----
@@ -2583,7 +2644,7 @@ app.get("/kiosk/status/:instanceId", async (c) => {
 
 				function connect() {
 					const proto = location.protocol === "https:" ? "wss:" : "ws:";
-					const url = proto + "//" + location.host + "/api/session/" + sessionId + "/ws";
+					const url = proto + "//" + location.host + basePath + "/api/session/" + sessionId + "/ws";
 					setConn("connecting…", "bg-yellow-400", true);
 					ws = new WebSocket(url);
 					ws.addEventListener("open", function () {
@@ -2652,7 +2713,8 @@ app.get("/kiosk/status/:instanceId", async (c) => {
  *
  * GET /kiosk/done?session=<sid>
  */
-app.get("/kiosk/done", (c) => {
+eventApp.get("/kiosk/done", (c) => {
+	const basePath = c.get("basePath");
 	const sessionFromQs = c.req.query("session");
 	const sessionId =
 		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
@@ -2661,10 +2723,10 @@ app.get("/kiosk/done", (c) => {
 	// paint. We construct the pickup URL using the same origin as this
 	// request — same logic the workflow uses for postcardUrl.
 	const pickupUrl = sessionId
-		? `${new URL(c.req.url).origin}/p/${sessionId}`
+		? `${new URL(c.req.url).origin}${basePath}/p/${sessionId}`
 		: null;
 	const qrSrc = pickupUrl
-		? `/api/kiosk/qr?url=${encodeURIComponent(pickupUrl)}`
+		? `${basePath}/api/kiosk/qr?url=${encodeURIComponent(pickupUrl)}`
 		: null;
 
 	return c.html(
@@ -2752,6 +2814,7 @@ app.get("/kiosk/done", (c) => {
 			</main>
 			<script>
 			(function () {
+				const basePath = ${JSON.stringify(basePath)};
 				const postcardEl = document.getElementById("done-postcard");
 				const metaEl     = document.getElementById("done-meta");
 				const secsEl     = document.getElementById("done-countdown-secs");
@@ -2803,7 +2866,7 @@ app.get("/kiosk/done", (c) => {
 							'<p class="text-lg font-semibold text-white/80">Your postcard is being prepared</p>' +
 							'<p class="mt-2 text-sm text-white/50">The image isn\\'t loading right now.</p>' +
 							(resolvedSid
-								? '<a href="/p/' + resolvedSid + '" class="mt-4 text-sm text-cf-orange underline underline-offset-4 hover:text-white">View your digital copy \u2192</a>'
+								? '<a href="' + basePath + '/p/' + resolvedSid + '" class="mt-4 text-sm text-cf-orange underline underline-offset-4 hover:text-white">View your digital copy \u2192</a>'
 								: '') +
 							'</div>';
 					}
@@ -2857,7 +2920,7 @@ app.get("/kiosk/done", (c) => {
 					stopPrintPoll();
 					printPollTimer = setInterval(async function () {
 						try {
-							var res = await fetch("/api/kiosk/print/" + encodeURIComponent(jobId) + "/status");
+							var res = await fetch(basePath + "/api/kiosk/print/" + encodeURIComponent(jobId) + "/status");
 							if (!res.ok) return; // silently retry on next interval
 							var data = await res.json().catch(function () { return {}; });
 							if (data.status === "printed") {
@@ -2898,7 +2961,7 @@ app.get("/kiosk/done", (c) => {
 						// Minimum 800ms loading state so the user sees feedback
 						// even when the POST returns near-instantly.
 						var minDelay = new Promise(function (r) { setTimeout(r, 800); });
-						var request = fetch("/api/kiosk/print", {
+						var request = fetch(basePath + "/api/kiosk/print", {
 							method: "POST",
 							headers: { "content-type": "application/json" },
 							body: JSON.stringify({ sessionId: resolvedSid }),
@@ -2943,7 +3006,7 @@ app.get("/kiosk/done", (c) => {
 					stopPrintPoll();
 					try { sessionStorage.removeItem("kiosk:selfie"); } catch (e) {}
 					try { sessionStorage.removeItem("kiosk:done"); } catch (e) {}
-					window.location.href = "/kiosk";
+					window.location.href = basePath + "/kiosk";
 				}
 
 				root.addEventListener("pointerdown", resetCountdown, { passive: true });
@@ -2974,18 +3037,19 @@ app.get("/kiosk/done", (c) => {
  * TV/monitor next to the booth. Uses the standard `page()` shell (not
  * `kioskPage` — this isn't a touch-locked iPad).
  *
- * Client-side JS polls `/api/display/feed` every 30s and diffs by sessionId
+ * Client-side JS polls `/api/gallery/feed` every 30s and diffs by sessionId
  * to avoid full re-renders.
  */
-app.get("/display", async (c) => {
-	const { event } = await getDefaultEventCtx(c.env);
+eventApp.get("/gallery", async (c) => {
+	const { event } = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	const { results } = await c.env.DB.prepare(
 		`SELECT id, scene_name, postcard_key, completed_at
 		 FROM sessions
-		 WHERE status = 'completed' AND postcard_key IS NOT NULL
+		 WHERE event_id = ? AND status = 'completed' AND postcard_key IS NOT NULL
 		 ORDER BY completed_at DESC
 		 LIMIT 8`,
-	).all<{
+	).bind(event.id).all<{
 		id: string;
 		scene_name: string | null;
 		postcard_key: string;
@@ -3026,7 +3090,7 @@ app.get("/display", async (c) => {
 	</div>`;
 
 	const origin = new URL(c.req.url).origin;
-	const qrTarget = `${origin}/kiosk`;
+	const qrTarget = `${origin}${basePath}/kiosk`;
 
 	return c.html(
 		page(
@@ -3036,7 +3100,7 @@ app.get("/display", async (c) => {
 				<div class="text-lg font-bold uppercase tracking-widest text-white/80">
 					${escapeAttr(event.name)}
 				</div>
-				<img src="/api/kiosk/qr?url=${encodeURIComponent(qrTarget)}" alt="QR code — scan to start" class="h-24 w-24 rounded" />
+				<img src="${basePath}/api/kiosk/qr?url=${encodeURIComponent(qrTarget)}" alt="QR code — scan to start" class="h-24 w-24 rounded" />
 			</header>
 			<main class="relative px-12 pb-12">
 				<div class="mb-8 flex items-end justify-between">
@@ -3044,7 +3108,7 @@ app.get("/display", async (c) => {
 						<h1 class="text-5xl md:text-6xl font-black tracking-tight">Fresh from the booth</h1>
 						<p class="mt-3 text-lg text-white/60">AI caricature postcards, generated live on Cloudflare.</p>
 					</div>
-					<a href="/kiosk" class="hidden md:inline-flex items-center gap-2 rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">
+					<a href="${basePath}/kiosk" class="hidden md:inline-flex items-center gap-2 rounded-full bg-cf-orange px-6 py-3 text-base font-semibold text-black hover:bg-cf-orange-dark transition">
 						Create yours now
 					</a>
 				</div>
@@ -3060,6 +3124,7 @@ app.get("/display", async (c) => {
 			</footer>
 			<script>
 			(function () {
+				var basePath = ${JSON.stringify(basePath)};
 				var POLL_INTERVAL = 30000;
 				var gallery = document.getElementById("gallery");
 				// Track which session IDs are currently rendered so we can diff.
@@ -3097,7 +3162,7 @@ app.get("/display", async (c) => {
 
 				async function poll() {
 					try {
-						var res = await fetch("/api/display/feed");
+						var res = await fetch(basePath + "/api/gallery/feed");
 						if (!res.ok) return;
 						var data = await res.json();
 						var sessions = data.sessions || [];
@@ -3131,14 +3196,15 @@ app.get("/display", async (c) => {
  * polling loop. Shape: { sessions: [{ sessionId, sceneId, sceneName,
  * postcardKey, completedAt }] }.
  */
-app.get("/api/display/feed", async (c) => {
+eventApp.get("/api/gallery/feed", async (c) => {
+	const { event } = c.get("eventCtx");
 	const { results } = await c.env.DB.prepare(
 		`SELECT id, scene_id, scene_name, postcard_key, completed_at
 		 FROM sessions
-		 WHERE status = 'completed' AND postcard_key IS NOT NULL
+		 WHERE event_id = ? AND status = 'completed' AND postcard_key IS NOT NULL
 		 ORDER BY completed_at DESC
 		 LIMIT 8`,
-	).all<{
+	).bind(event.id).all<{
 		id: string;
 		scene_id: string | null;
 		scene_name: string | null;
@@ -3438,7 +3504,7 @@ app.delete("/api/test-session/:id", async (c) => {
  *
  * GET /api/session/:id/ws  (with Upgrade: websocket)
  */
-app.get("/api/session/:id/ws", async (c) => {
+eventApp.get("/api/session/:id/ws", async (c) => {
 	const id = c.req.param("id");
 	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
 	if (c.req.header("Upgrade") !== "websocket") {
@@ -3657,7 +3723,7 @@ app.get("/test-session/:id", (c) => {
  * GET /test-workflow-moderate
  */
 app.get("/test-workflow-moderate", async (c) => {
-	const { scenes } = await getDefaultEventCtx(c.env);
+	const scenes = await loadScenes(c.env);
 	return c.html(
 		page(
 			"Workflow — Step 4.4",
@@ -3987,7 +4053,7 @@ app.get("/test-workflow-moderate/:id", (c) => {
  * GET /test-i2i
  */
 app.get("/test-i2i", async (c) => {
-	const { scenes } = await getDefaultEventCtx(c.env);
+	const scenes = await loadScenes(c.env);
 	return c.html(
 		page(
 			"Test image-to-image — Step 2.2",
@@ -4663,7 +4729,7 @@ app.post("/api/test-postcard", async (c) => {
  * The `id` is rendered as a short hex preview but not echoed verbatim into
  * the HTML beyond `.slice(0, 8)` so we don't reflect arbitrary input.
  */
-function brandedPostcardNotFound(c: Context<{ Bindings: Env }>, id?: string, emptyEmoji = "🎨") {
+function brandedPostcardNotFound(c: Context<any>, id?: string, emptyEmoji = "🎨") {
 	const idPreview = id ? id.slice(0, 8) : "";
 	const previewHtml = idPreview
 		? `<p class="text-white/60 mb-2">No session matches <code class="text-cf-orange">${idPreview}…</code></p>`
@@ -4711,14 +4777,15 @@ function brandedPostcardNotFound(c: Context<{ Bindings: Env }>, id?: string, emp
  * Public — UUIDs are unguessable enough for an event activation, and
  * /api/run-img is already public for `runs/` keys. No auth gate.
  */
-app.get("/p/:id", async (c) => {
-	const { event } = await getDefaultEventCtx(c.env);
+eventApp.get("/p/:id", async (c) => {
+	const { event } = c.get("eventCtx");
+	const basePath = c.get("basePath");
 	const id = c.req.param("id");
 	const isShortSlug = /^[a-z2-9]{6,16}$/.test(id);
 	const isUuid = UUID_RE.test(id);
 
 	const origin = new URL(c.req.url).origin;
-	const pickupUrl = `${origin}/p/${id}`;
+	const pickupUrl = `${origin}${basePath}/p/${id}`;
 
 	// ---- Malformed id — branded 404 ----
 	if (!isShortSlug && !isUuid) {
@@ -4740,7 +4807,7 @@ app.get("/p/:id", async (c) => {
 							at the booth, double-check the QR on your printed postcard or ask a
 							staff member for help.
 						</p>
-						<a href="/" class="mt-10 inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+						<a href="${basePath}/" class="mt-10 inline-block rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
 							See what we built
 						</a>
 					</div>
@@ -4793,11 +4860,11 @@ app.get("/p/:id", async (c) => {
 		const retryCount = retryParam ? parseInt(retryParam, 10) || 0 : 0;
 		const MAX_RETRIES = 12;
 		const shouldAutoRefresh = !isErrored && retryCount < MAX_RETRIES;
-		const nextRetryUrl = `/p/${id}?_retry=${retryCount + 1}`;
+		const nextRetryUrl = `${basePath}/p/${id}?_retry=${retryCount + 1}`;
 
 		const timedOutCopy = retryCount >= MAX_RETRIES && !isErrored
 			? `<p class="text-white/50 text-sm mt-4">It's taking longer than usual. Your postcard may still be processing.</p>
-			   <a href="/p/${id}" class="mt-4 inline-flex items-center justify-center rounded-full bg-cf-orange px-6 py-3 text-sm font-bold text-black hover:bg-cf-orange-dark transition">Refresh</a>`
+			   <a href="${basePath}/p/${id}" class="mt-4 inline-flex items-center justify-center rounded-full bg-cf-orange px-6 py-3 text-sm font-bold text-black hover:bg-cf-orange-dark transition">Refresh</a>`
 			: "";
 
 		return c.html(
@@ -4843,7 +4910,7 @@ app.get("/p/:id", async (c) => {
 		page(
 			`Your postcard — ${sceneName}`,
 			`<header class="absolute top-0 left-0 right-0 px-6 sm:px-8 py-6 flex items-center justify-between z-10">
-				<a href="/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
+				<a href="${basePath}/" class="flex items-center gap-2 text-sm uppercase tracking-widest text-white/60 hover:text-white transition">
 					<img src="/cloudflare-logo.png" alt="" class="h-5 w-5" />
 					<span>Cloudflare &middot; ${escapeAttr(event.name)}</span>
 				</a>
@@ -4936,13 +5003,14 @@ app.get("/p/:id", async (c) => {
 							<img src="/cloudflare-logo.png" alt="Cloudflare" class="h-3.5 w-auto opacity-80" />
 							<span>Cloudflare</span>
 						</div>
-						<a href="/privacy" class="text-[11px] uppercase tracking-[0.2em] text-white/30 underline underline-offset-2 hover:text-white/50">Privacy</a>
+						<a href="${basePath}/privacy" class="text-[11px] uppercase tracking-[0.2em] text-white/30 underline underline-offset-2 hover:text-white/50">Privacy</a>
 					</footer>
 				</div>
 			</main>
 
 			<script>
 			(function () {
+				var basePath = ${JSON.stringify(basePath)};
 				// ---- Share button ----
 				var btn = document.getElementById("share-btn");
 				var label = document.getElementById("share-label");
@@ -4997,7 +5065,7 @@ app.get("/p/:id", async (c) => {
 						setEmailState("loading");
 
 						try {
-							var res = await fetch("/api/p/" + encodeURIComponent(sessionId) + "/email", {
+							var res = await fetch(basePath + "/api/p/" + encodeURIComponent(sessionId) + "/email", {
 								method: "POST",
 								headers: { "content-type": "application/json" },
 								body: JSON.stringify({ email: email }),
@@ -5037,7 +5105,7 @@ app.get("/p/:id", async (c) => {
  *
  * POST /api/p/:id/email  body: { email }
  */
-app.post("/api/p/:id/email", async (c) => {
+eventApp.post("/api/p/:id/email", async (c) => {
 	const id = c.req.param("id");
 	if (!UUID_RE.test(id)) {
 		return c.json({ error: "invalid session id" }, 400);
@@ -5115,8 +5183,8 @@ app.post("/api/p/:id/email", async (c) => {
  * defeats the whole point of friendly error pages here. The branded 404
  * is harmless on any path under /p/ — it doesn't echo arbitrary input.
  */
-app.get("/p", (c) => brandedPostcardNotFound(c));
-app.get("/p/:id/*", (c) => brandedPostcardNotFound(c, c.req.param("id")));
+eventApp.get("/p", (c) => brandedPostcardNotFound(c));
+eventApp.get("/p/:id/*", (c) => brandedPostcardNotFound(c, c.req.param("id")));
 
 /**
  * Test endpoint: generate an image with Workers AI (FLUX.2 klein 4B).
@@ -5234,6 +5302,75 @@ app.get("/api/test-get", async (c) => {
 			"content-length": String(obj.size),
 		},
 	});
+});
+
+// ---------------------------------------------------------------------------
+// Root: event index listing active events
+// ---------------------------------------------------------------------------
+
+app.get("/", async (c) => {
+	const events = await listEvents(c.env);
+	const activeEvents = events.filter((e) => e.status === "active");
+
+	if (activeEvents.length === 1) {
+		// Single active event — redirect straight to it
+		return c.redirect(`/e/${activeEvents[0].id}`, 302);
+	}
+
+	const cards = activeEvents.length === 0
+		? `<p class="text-white/60 text-center py-12">No active events right now.</p>`
+		: activeEvents.map((e) => `<a href="/e/${escapeAttr(e.id)}" class="block rounded-2xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/30 transition p-6">
+			<div class="text-xl font-bold">${escapeAttr(e.name)}</div>
+			<p class="mt-2 text-sm text-white/60">${escapeAttr(e.tagline)}</p>
+		</a>`).join("\n");
+
+	return c.html(
+		page(
+			"AI Caricature Booth",
+			`<main class="max-w-2xl mx-auto px-6 py-16">
+				<h1 class="text-4xl font-bold text-center mb-2">AI Caricature Booth</h1>
+				<p class="text-center text-white/60 mb-12">Pick an event to get started.</p>
+				<div class="flex flex-col gap-4">${cards}</div>
+				<footer class="mt-16 text-center text-[11px] uppercase tracking-[0.25em] text-white/30">
+					Built end-to-end on Cloudflare
+				</footer>
+			</main>`,
+		),
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Mount event sub-app and legacy redirects
+// ---------------------------------------------------------------------------
+
+app.route("/e/:eventId", eventApp);
+
+// Legacy redirects: bare paths → default event
+app.get("/kiosk", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/kiosk`, 302));
+app.get("/kiosk/*", (c) => {
+	const sub = c.req.path.replace(/^\/kiosk/, "");
+	return c.redirect(`/e/${DEFAULT_EVENT_ID}/kiosk${sub}`, 302);
+});
+app.get("/display", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/gallery`, 301));
+app.get("/privacy", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/privacy`, 302));
+app.get("/p/:id", async (c) => {
+	const id = c.req.param("id");
+	// Look up the session's event_id so we redirect to the right event
+	const row = await c.env.DB.prepare(
+		"SELECT event_id FROM sessions WHERE id = ?",
+	).bind(id).first<{ event_id: string | null }>();
+	const eventId = row?.event_id ?? DEFAULT_EVENT_ID;
+	return c.redirect(`/e/${eventId}/p/${id}`, 302);
+});
+app.get("/p", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/p`, 302));
+app.post("/api/p/:id/email", async (c) => {
+	const id = c.req.param("id");
+	const row = await c.env.DB.prepare(
+		"SELECT event_id FROM sessions WHERE id = ?",
+	).bind(id).first<{ event_id: string | null }>();
+	const eventId = row?.event_id ?? DEFAULT_EVENT_ID;
+	// Forward the POST body
+	return fetch(new URL(`/e/${eventId}/api/p/${id}/email`, c.req.url), c.req.raw);
 });
 
 export default app;
