@@ -32,9 +32,6 @@ import { renderSceneOptions } from "./components/wordmark";
 // the canonical scene definitions into KV without needing wrangler CLI.
 import scenesSeed from "../seed/scenes.json";
 
-/** Default event ID — used for legacy route redirects. */
-const DEFAULT_EVENT_ID = "nyc-tech-week-2026";
-
 // ---------------------------------------------------------------------------
 // Hono type augmentation for event-scoped routes
 // ---------------------------------------------------------------------------
@@ -5344,33 +5341,5 @@ app.get("/", async (c) => {
 // ---------------------------------------------------------------------------
 
 app.route("/e/:eventId", eventApp);
-
-// Legacy redirects: bare paths → default event
-app.get("/kiosk", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/kiosk`, 302));
-app.get("/kiosk/*", (c) => {
-	const sub = c.req.path.replace(/^\/kiosk/, "");
-	return c.redirect(`/e/${DEFAULT_EVENT_ID}/kiosk${sub}`, 302);
-});
-app.get("/display", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/gallery`, 301));
-app.get("/privacy", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/privacy`, 302));
-app.get("/p/:id", async (c) => {
-	const id = c.req.param("id");
-	// Look up the session's event_id so we redirect to the right event
-	const row = await c.env.DB.prepare(
-		"SELECT event_id FROM sessions WHERE id = ?",
-	).bind(id).first<{ event_id: string | null }>();
-	const eventId = row?.event_id ?? DEFAULT_EVENT_ID;
-	return c.redirect(`/e/${eventId}/p/${id}`, 302);
-});
-app.get("/p", (c) => c.redirect(`/e/${DEFAULT_EVENT_ID}/p`, 302));
-app.post("/api/p/:id/email", async (c) => {
-	const id = c.req.param("id");
-	const row = await c.env.DB.prepare(
-		"SELECT event_id FROM sessions WHERE id = ?",
-	).bind(id).first<{ event_id: string | null }>();
-	const eventId = row?.event_id ?? DEFAULT_EVENT_ID;
-	// Forward the POST body
-	return fetch(new URL(`/e/${eventId}/api/p/${id}/email`, c.req.url), c.req.raw);
-});
 
 export default app;
