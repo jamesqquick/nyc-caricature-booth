@@ -50,3 +50,19 @@ export interface EventContext {
 	event: EventRecord;
 	scenes: SceneRecord[];
 }
+
+// ---------------------------------------------------------------------------
+// Hono type augmentation for event-scoped routes
+// ---------------------------------------------------------------------------
+
+/**
+ * Variables set by the event middleware and available on c.get() / c.var
+ * inside the /e/:eventId sub-app.
+ */
+export type EventVars = {
+	eventCtx: EventContext;
+	/** URL prefix for the current event, e.g. "/e/nyc-tech-week-2026" */
+	basePath: string;
+};
+
+export type EventEnv = { Bindings: Env; Variables: EventVars };
