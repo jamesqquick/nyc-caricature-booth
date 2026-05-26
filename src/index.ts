@@ -1755,17 +1755,14 @@ app.get('/admin/events/:eventId', async (c) => {
 
 					<!-- Accent color: always full width below -->
 					<div class="mt-8 max-w-xl">
-						<form id="branding-form" class="space-y-6">
-							<div>
-								<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Accent color</label>
-								<div class="flex items-center gap-3">
-									<input name="accent_color" type="text" value="${escapeAttr(ev.accent_color)}" placeholder="#f6821f"
-										class="w-40 rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white font-mono focus:border-cf-orange/50 focus:outline-none" />
-									<div id="color-swatch" class="size-10 rounded-lg border border-white/10" style="background:${escapeAttr(ev.accent_color)}"></div>
-								</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Accent color</label>
+							<div class="flex items-center gap-3">
+								<input id="accent-color-input" name="accent_color" type="text" value="${escapeAttr(ev.accent_color)}" placeholder="#f6821f"
+									class="w-40 rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white font-mono focus:border-cf-orange/50 focus:outline-none" />
+								<div id="color-swatch" class="size-10 rounded-lg border border-white/10" style="background:${escapeAttr(ev.accent_color)}"></div>
 							</div>
-							<button type="submit" class="rounded-full bg-cf-orange px-6 py-2.5 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">Save branding</button>
-						</form>
+						</div>
 					</div>
 				</section>
 
@@ -1900,20 +1897,15 @@ app.get('/admin/events/:eventId', async (c) => {
 					});
 				}
 
-				// ---- Branding form ----
-				document.getElementById("branding-form").addEventListener("submit", function (e) {
-					e.preventDefault();
-					var f = e.target;
-					saveFields({
-						accent_color: f.querySelector('[name="accent_color"]').value,
-					}).catch(function (err) { toast(err.message, true); });
-				});
-
-				// Color swatch live preview
-				var accentInput = document.querySelector('[name="accent_color"]');
+				// ---- Accent color: live swatch + auto-save on blur ----
+				var accentInput = document.getElementById("accent-color-input");
 				var swatch = document.getElementById("color-swatch");
 				if (accentInput && swatch) {
 					accentInput.addEventListener("input", function () { swatch.style.background = accentInput.value; });
+					accentInput.addEventListener("change", function () {
+						saveFields({ accent_color: accentInput.value })
+							.catch(function (err) { toast(err.message, true); });
+					});
 				}
 
 				// ---- Watermark upload (right) ----
