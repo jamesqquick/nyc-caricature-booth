@@ -75,7 +75,7 @@ function loadConfig(): AgentConfig {
  * a genuine failure (postcard missing, R2 outage, etc.) should surface here.
  */
 async function downloadPostcard(config: AgentConfig, postcardKey: string): Promise<Uint8Array> {
-	const url = `${config.workerUrl}/api/run-img?key=${encodeURIComponent(postcardKey)}`;
+	const url = `${config.workerUrl}/e/${config.eventId}/api/run-img?key=${encodeURIComponent(postcardKey)}`;
 	const delays = [500, 1500, 4000];
 	let lastErr: unknown;
 
