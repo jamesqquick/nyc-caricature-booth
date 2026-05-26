@@ -142,10 +142,9 @@ eventApp.get('/', async (c) => {
 	return c.html(
 		page(
 			`${event.name} — AI Caricature Booth`,
-			`<div class="fixed top-4 left-4 z-50 flex flex-col items-center gap-1">
+			`			<div class="fixed top-4 left-4 z-50">
 				<img src="${qrSrc}" alt="QR code — scan to open this page"
 					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
-				<p class="text-[9px] uppercase tracking-[0.18em] text-white/40">Scan me</p>
 			</div>
 			<main class="px-6 sm:px-8 pb-20">
 				<!-- Hero -->
@@ -3008,10 +3007,9 @@ eventApp.get('/kiosk', async (c) => {
 	return c.html(
 		kioskPage(
 			`${event.name} — Tap to start`,
-			`<div class="fixed top-4 left-4 z-50 flex flex-col items-center gap-1">
+			`			<div class="fixed top-4 left-4 z-50">
 				<img src="${qrSrc}" alt="QR code — scan to open this page"
 					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
-				<p class="text-[9px] uppercase tracking-[0.18em] text-white/40">Scan me</p>
 			</div>
 			<main class="h-full w-full flex flex-col pt-10">
 				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
@@ -3056,10 +3054,9 @@ eventApp.get('/kiosk/capture', (c) => {
 	return c.html(
 		kioskPage(
 			'Capture your selfie',
-			`<div class="fixed top-4 left-4 z-50 flex flex-col items-center gap-1">
+			`			<div class="fixed top-4 left-4 z-50">
 				<img src="${qrSrc}" alt="QR code — scan to open this page"
 					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
-				<p class="text-[9px] uppercase tracking-[0.18em] text-white/40">Scan me</p>
 			</div>
 			<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
