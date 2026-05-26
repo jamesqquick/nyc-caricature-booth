@@ -91,7 +91,7 @@ const page = (title: string, body: string) => `<!doctype html>
 		<title>${title}</title>
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<link rel="stylesheet" href="/app.css" />
-		<link rel="icon" href="/cloudflare-logo.png" />
+		<link rel="icon" href="/favicon.png" />
 	</head>
 	<body class="min-h-screen bg-cf-ink text-white font-display antialiased">
 		${body}
@@ -121,7 +121,7 @@ const kioskPage = (title: string, body: string) => `<!doctype html>
 		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 		<meta name="theme-color" content="#000000" />
 		<link rel="stylesheet" href="/app.css" />
-		<link rel="icon" href="/cloudflare-logo.png" />
+		<link rel="icon" href="/favicon.png" />
 	</head>
 	<!--
 		min-h-[100dvh] + overscroll-none = looks like a locked kiosk on iPad
