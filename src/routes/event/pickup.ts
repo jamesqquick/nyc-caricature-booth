@@ -115,8 +115,8 @@ app.get('/p/:id', async (c) => {
 
 	const sceneName = row.scene_name ?? 'Scene';
 	const postcardKey = row.postcard_key;
-	const postcardSrc = `/api/run-img?key=${encodeURIComponent(postcardKey)}`;
-	const downloadSrc = `/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`;
+	const postcardSrc = `${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}`;
+	const downloadSrc = `${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`;
 
 	const completedLabel = row.completed_at
 		? new Date(row.completed_at * 1000).toLocaleString('en-US', {
@@ -337,6 +337,7 @@ app.post('/api/p/:id/email', async (c) => {
 	trackEvent(c.env.ANALYTICS, 'email.captured', id);
 
 	const origin = new URL(c.req.url).origin;
+	const basePath = c.get('basePath');
 	const postcardKey = session.postcard_key;
 	const sceneName = session.scene_name ?? 'Scene';
 	c.executionCtx.waitUntil(
@@ -344,9 +345,9 @@ app.post('/api/p/:id/email', async (c) => {
 			to: email,
 			sessionId: id,
 			sceneName,
-			pickupUrl: `${origin}/p/${id}`,
-			postcardImageUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}`,
-			downloadUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`,
+			pickupUrl: `${origin}${basePath}/p/${id}`,
+			postcardImageUrl: `${origin}${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}`,
+			downloadUrl: `${origin}${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`,
 		}).catch((err) => {
 			console.error(`[email-optin] send failed session=${id} err=${err}`);
 		}),

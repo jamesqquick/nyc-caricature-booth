@@ -64,8 +64,9 @@ app.post('/api/admin/resend-email/:id', async (c) => {
 		return c.json({ error: 'invalid session id' }, 400);
 	}
 
-	const session = await c.env.DB.prepare('SELECT id, status, postcard_key, scene_name, email FROM sessions WHERE id = ?').bind(id).first<{
+	const session = await c.env.DB.prepare('SELECT id, event_id, status, postcard_key, scene_name, email FROM sessions WHERE id = ?').bind(id).first<{
 		id: string;
+		event_id: string;
 		status: string | null;
 		postcard_key: string | null;
 		scene_name: string | null;
@@ -83,6 +84,7 @@ app.post('/api/admin/resend-email/:id', async (c) => {
 	}
 
 	const origin = new URL(c.req.url).origin;
+	const basePath = `/e/${session.event_id}`;
 	const email = session.email;
 	const postcardKey = session.postcard_key;
 	const sceneName = session.scene_name ?? 'Scene';
@@ -94,9 +96,9 @@ app.post('/api/admin/resend-email/:id', async (c) => {
 			to: email,
 			sessionId: id,
 			sceneName,
-			pickupUrl: `${origin}/p/${id}`,
-			postcardImageUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}`,
-			downloadUrl: `${origin}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`,
+			pickupUrl: `${origin}${basePath}/p/${id}`,
+			postcardImageUrl: `${origin}${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}`,
+			downloadUrl: `${origin}${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`,
 		}).catch((err) => {
 			console.error(`[admin-resend] send failed session=${id} err=${err}`);
 		}),
