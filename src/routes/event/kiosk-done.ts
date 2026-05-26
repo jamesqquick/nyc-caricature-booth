@@ -103,7 +103,7 @@ app.get('/kiosk/done', (c) => {
 						figure.innerHTML = '<div class="w-full aspect-[3/2] rounded-2xl border border-white/10 bg-white/[0.03] flex flex-col items-center justify-center text-center px-6">'
 							+ '<div class="text-4xl mb-3" aria-hidden="true">\ud83d\uddbc\ufe0f</div>'
 							+ '<p class="text-lg font-semibold text-white/80">Your postcard is being prepared</p>'
-							+ '<p class="mt-2 text-sm text-white/50">The image isn\'t loading right now.</p>'
+							+ '<p class="mt-2 text-sm text-white/50">The image is not loading right now.</p>'
 							+ (resolvedSid ? '<a href="' + basePath + '/p/' + resolvedSid + '" class="mt-4 text-sm text-cf-orange underline underline-offset-4 hover:text-white">View your digital copy \u2192</a>' : '')
 							+ '</div>';
 					}
