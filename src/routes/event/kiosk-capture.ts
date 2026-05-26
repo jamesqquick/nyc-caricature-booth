@@ -105,10 +105,15 @@ app.get('/kiosk/capture', (c) => {
 						'<p class="mt-2 text-sm text-white/60">If you see a permissions prompt, tap Allow.</p>'
 					);
 					if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+						// getUserMedia is only available on https:// or localhost.
+						// On http:// with a non-localhost hostname it's undefined entirely.
+						const isInsecure = location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1";
 						setOverlay(
 							'<div class="size-16 rounded-full border-2 border-red-400/30 bg-red-500/10 flex items-center justify-center text-2xl mb-4" aria-hidden="true">\u26a0\ufe0f</div>' +
-							'<div class="text-xl font-semibold">Camera not supported</div>' +
-							'<p class="mt-2 text-sm text-white/60 max-w-xs">This browser can\'t access the camera. Try Safari on iPad or Chrome on desktop.</p>' +
+							'<div class="text-xl font-semibold">Camera not available</div>' +
+							(isInsecure
+								? '<p class="mt-2 text-sm text-white/60 max-w-xs">Camera requires a secure connection. Open this page via <strong>localhost</strong> instead of an IP address or hostname.</p>'
+								: '<p class="mt-2 text-sm text-white/60 max-w-xs">This browser can\'t access the camera. Try Safari on iPad or Chrome on desktop.</p>') +
 							'<a href="' + basePath + '/kiosk" class="mt-6 inline-flex items-center justify-center rounded-full bg-cf-orange px-8 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition">\u2190 Back to start</a>'
 						);
 						return;
