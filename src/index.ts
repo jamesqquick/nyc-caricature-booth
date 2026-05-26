@@ -38,13 +38,6 @@ import { sessionWsRoutes } from './routes/event/session-ws';
 import { pickupRoutes } from './routes/event/pickup';
 import { imagesRoutes } from './routes/event/images';
 
-// Dev / test routes (always mounted)
-import { testBasicRoutes } from './routes/dev/test-basic';
-import { testSessionRoutes } from './routes/dev/test-session';
-import { testWorkflowRoutes } from './routes/dev/test-workflow';
-import { testI2iRoutes } from './routes/dev/test-i2i';
-import { testSceneGridRoutes } from './routes/dev/test-scene-grid';
-import { testMiscRoutes } from './routes/dev/test-misc';
 
 // Re-export Durable Objects and Workflows so wrangler can find them.
 export { CaricatureWorkflow } from './workflows/caricature';
@@ -80,13 +73,6 @@ app.route('/', adminEventsApiRoutes);
 app.route('/', adminWatermarksApiRoutes);
 app.route('/', adminScenesApiRoutes);
 
-// Dev / test routes
-app.route('/', testBasicRoutes);
-app.route('/', testSessionRoutes);
-app.route('/', testWorkflowRoutes);
-app.route('/', testI2iRoutes);
-app.route('/', testSceneGridRoutes);
-app.route('/', testMiscRoutes);
 
 // ---------------------------------------------------------------------------
 // Event-scoped sub-app (/e/:eventId/*)
