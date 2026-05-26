@@ -32,7 +32,8 @@
 		"binding": "AI"
 	},
 	"images": {
-		"binding": "IMAGES"
+		"binding": "IMAGES",
+		"remote": true
 	},
 	"workflows": [
 		{
