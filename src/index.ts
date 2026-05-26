@@ -1668,7 +1668,7 @@ app.get('/admin/events/:eventId', async (c) => {
 				<section data-panel="branding" class="tab-panel hidden">
 					<div class="flex flex-col xl:flex-row xl:items-start gap-8">
 						<!-- Left column: watermark controls -->
-						<div class="space-y-8 max-w-xl flex-shrink-0">
+						<div class="space-y-8 xl:w-1/2">
 							<div>
 								<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-right watermark (PNG)</label>
 								<p class="text-xs text-white/40 mb-3">Composited onto the bottom-right corner of every postcard. Nothing is shown if not set.</p>
@@ -1733,7 +1733,7 @@ app.get('/admin/events/:eventId', async (c) => {
 						</div>
 
 						<!-- Right column: postcard preview (sticky on xl) -->
-						<div class="xl:sticky xl:top-4 flex-1 min-w-0">
+						<div class="xl:sticky xl:top-4 xl:w-1/2 min-w-0">
 							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Postcard preview</label>
 							<p class="text-xs text-white/40 mb-3">Approximate layout — actual postcard is 1800×1200 px.${ev.watermark_image_key || ev.watermark_image_key_left ? ' Drag the sliders to resize.' : ' Upload watermarks to see them here.'}</p>
 							<div id="postcard-preview" style="position:relative;aspect-ratio:3/2;overflow:hidden;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background-color:#e5e7eb;background-image:repeating-conic-gradient(#d1d5db 0% 25%,#e5e7eb 0% 50%);background-size:16px 16px;">
