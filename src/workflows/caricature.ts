@@ -175,6 +175,18 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				const scene = findScene(eventCtx.scenes, sceneId);
 				if (!scene) throw new Error(`unknown scene_id: ${sceneId} for event ${eventId}`);
 
+				// Compose the final prompt: event-level preamble + scene-specific
+				// prompt + event-level constraints. Each part is optional; empty
+				// parts are filtered out so we don't send extra whitespace.
+				const { event } = eventCtx;
+				const finalPrompt = [
+					event.scene_style_preamble,
+					scene.prompt,
+					event.scene_constraints,
+				]
+					.filter((s): s is string => !!s && s.trim().length > 0)
+					.join("\n\n");
+
 				const obj = await this.env.BUCKET.get(selfieKey);
 				if (!obj) throw new Error(`selfie not found in R2: ${selfieKey}`);
 				const selfieBytes = await obj.arrayBuffer();
@@ -183,7 +195,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				const { bytes, contentType, elapsedMs } = await runReplicate(
 					this.env.REPLICATE_API_TOKEN,
 					{
-						prompt: scene.prompt,
+						prompt: finalPrompt,
 						selfieBytes,
 						selfieType,
 					},

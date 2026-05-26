@@ -1,9 +1,13 @@
 /**
  * Scene loading helpers.
  *
- * Scenes now live in the D1 `scenes` table, loaded via EventContext.
- * The bundled seed/scenes.json is kept only for backward-compat with
- * callers that haven't migrated to EventContext yet.
+ * Production scenes live in the D1 `scenes` table, loaded per-event via
+ * loadEventContext() in src/lib/event-ctx.ts.
+ *
+ * The bundled seed/scenes.json + legacy loadScenes/loadSceneById below
+ * are retained ONLY for the /test-* dev endpoints that haven't been
+ * migrated to event-scoped context. They are NOT used by any production
+ * kiosk, display, or admin route.
  */
 
 import scenesSeed from "../../seed/scenes.json";
@@ -20,16 +24,18 @@ export type Scene = {
 const SCENES = scenesSeed as Scene[];
 
 /**
- * Load scenes from the bundled seed (legacy path).
- * Prefer using EventContext.scenes from loadEventContext() instead.
+ * Load scenes from the bundled seed.
+ * LEGACY — only used by /test-* dev endpoints.
+ * Production routes use EventContext.scenes instead.
  */
 export async function loadScenes(_env: Env): Promise<Scene[]> {
 	return SCENES;
 }
 
 /**
- * Load a single scene by ID from the bundled seed (legacy path).
- * Prefer looking up scenes from EventContext.scenes instead.
+ * Load a single scene by ID from the bundled seed.
+ * LEGACY — only used by /test-* dev endpoints.
+ * Production routes use EventContext.scenes instead.
  */
 export async function loadSceneById(_env: Env, sceneId: string): Promise<Scene> {
 	const scene = SCENES.find((s) => s.id === sceneId);

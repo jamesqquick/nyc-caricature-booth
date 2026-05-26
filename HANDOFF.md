@@ -1,6 +1,6 @@
-# NYC Caricature Booth — Handoff
+# Caricature Booth — Handoff
 
-A staff-assisted kiosk activation for **Cloudflare NY Tech Week (early June 2026)** that turns selfies into AI-generated caricatures set in iconic NYC scenes, printed as postcards on the spot. Everything runs on Cloudflare.
+A **multi-event** staff-assisted kiosk that turns selfies into AI-generated caricatures, printed as postcards on the spot. Each event has its own slug, scenes, prompts, branding, and watermarks — all managed via an admin UI. Everything runs on Cloudflare. Originally built for Cloudflare NY Tech Week (June 2026).
 
 - **Production URL:** https://nyc-caricature-booth.examples.workers.dev
 - **GitHub:** https://github.com/jamesqquick/nyc-caricature-booth
@@ -57,20 +57,19 @@ sessionStorage keys used across the flow:
 - `kiosk:selfie` — `{ sessionId, selfieKey, size, capturedAt, sceneId, sceneName, sceneEmoji, sceneChosenAt }` — cleared on workflow submit
 - `kiosk:done` — `{ sessionId, sceneId, sceneName, selfieKey, caricatureKey, postcardKey, postcardUrl, finishedAt }` — set by status screen on `done` WS frame, cleared by done screen on auto-return
 
-### Phase 7 — big screen display
+### Phase 7 — gallery
 
-The `/display` route is a passive gallery for a TV/monitor next to the booth.
-Uses the standard `page()` shell (not `kioskPage`). No touch-lock, no session
-state — just a slow-refresh view of recent postcards.
+The `/e/:eventSlug/gallery` route is a passive gallery for a TV/monitor next
+to the booth. Uses the standard `page()` shell (not `kioskPage`). No
+touch-lock, no session state — just a slow-refresh view of recent postcards.
 
 - Server-renders last 8 completed postcards from D1 as a 4-column grid
-- Client JS polls `GET /api/display/feed` every 30s, diffs by sessionId,
-  only patches the DOM when the list changes
-- Header: "NY Tech Week 2026" text (left), QR to production URL (center),
-  "I 🧡 NY" wordmark with animated glow pulse (right)
+- Client JS polls `GET /e/:eventSlug/api/gallery/feed` every 30s, diffs by
+  sessionId, only patches the DOM when the list changes
+- Header: event name + tagline (from `events` table), optional watermarks
 - Footer: "Built end-to-end on Cloudflare" pill badge
 - Idle shimmer: CSS gradient sweep (10s cycle, subtle orange tint)
-- Empty state: "No postcards yet — be the first!" when D1 has no completed rows
+- Empty state shown when D1 has no completed rows for the event
 
 ### Phase 8 — print queue + agent ✅
 
@@ -141,8 +140,6 @@ only secret it relies on is the `ADMIN_PASSWORD` Worker secret.
     kiosk endpoint's idempotency check; see gotcha #27).
   - `POST /api/admin/resend-email/:id` — re-fires `sendPostcardEmail()`
     via `waitUntil` (stubbed body — see gotcha #26).
-  - `POST /api/admin/reseed-scenes` — writes the bundled `seed/scenes.json`
-    into KV. Bundle is captured at deploy time (see gotcha #29).
 - **Auto-refresh** — both `/api/admin/sessions` and `/api/admin/stats`
   polled every 10s and rendered into the same DOM as the initial paint.
 - **Toasts** — Notyf via CDN (see gotcha #28).
@@ -206,9 +203,9 @@ state between iPad and big screen. After discussion we **dropped that idea**:
 
 - **iPad (and any user phone)** = the personal session view — connects to a
   per-session DO for live updates while the workflow runs.
-- **Big screen** = a separate, static-ish gallery page (recent caricatures,
-  QR code, project info). **No real-time per-session feed.** It just refreshes
-  on a slow interval. This will be built later in (a slimmed-down) Phase 7.
+- **Gallery** = a separate, static-ish gallery page (recent caricatures,
+  QR code, event branding). **No real-time per-session feed.** It just refreshes
+  on a slow interval.
 - **Print queue** = uses D1 `print_jobs` table + a local Node agent that
   polls Worker endpoints. Originally planned as a Cloudflare Queue but
   pivoted to D1 (simpler, no API token, built-in audit log).
@@ -219,6 +216,47 @@ state between iPad and big screen. After discussion we **dropped that idea**:
 generating → compositing → done; any non-terminal → errored), per-step
 payloads, and accumulated timings. Holds WebSocket connections via the
 Hibernation API so it can be evicted between events while sockets stay open.
+
+### Multi-event architecture
+
+The booth supports multiple concurrent events, each with its own slug,
+branding, scenes, and watermarks. Key design decisions:
+
+- **D1 schema:** `events` table stores per-event config (name, slug, tagline,
+  status, scene_style_preamble, scene_constraints, kiosk/gallery copy, etc.).
+  `scenes` table has an `event_id` FK. `sessions` and `print_jobs` also carry
+  `event_id` for scoping. See `migrations/0005_multi_event.sql`.
+
+- **Event-scoped routing:** All kiosk, gallery, and session API routes live
+  under `/e/:eventSlug/...` via a Hono sub-app (`eventApp`). A middleware
+  calls `loadEventContext()` which reads D1 (cached in KV with short TTL)
+  and injects `EventContext` (event record + scenes array) into the Hono
+  context. See `src/lib/event-ctx.ts`.
+
+- **Runtime prompt composition:** The workflow's generate step composes the
+  FLUX prompt as: `event.scene_style_preamble + scene.prompt +
+  event.scene_constraints`. This lets style changes (like "whimsical
+  caricature style") apply globally without editing each scene. Scene prompts
+  contain only scene-specific placement text (e.g. "person standing next to
+  a hot dog cart"). See `src/workflows/caricature.ts`.
+
+- **Two watermarks per event:** `watermark_image_key` (bottom-right) and
+  `watermark_image_key_left` (bottom-left) are separate R2 uploads managed
+  via the admin event editor's Watermarks tab. When not set, no watermark
+  is composited (no fallback to any bundled asset). See `src/lib/postcard.ts`.
+
+- **Event slug is editable:** The `PUT /api/admin/events/:eventId` API handles
+  slug changes by cascading the update to scenes, sessions, print_jobs, and
+  event_admins (via D1 batch).
+
+- **Cloning:** `POST /api/admin/events/:eventId/clone` duplicates an event +
+  its scenes as a draft with `-copy` suffix. Watermark R2 objects are NOT
+  copied (the clone starts with no watermarks).
+
+- **Admin event UI:** `/admin/events` lists all events as responsive cards.
+  `/admin/events/:eventId` is a tabbed editor (Branding, Copy, Scenes,
+  Watermarks, Danger Zone). All mutations invalidate the KV event context
+  cache via `invalidateEventCache()`.
 
 ---
 
@@ -234,8 +272,8 @@ Hibernation API so it can be evicted between events while sockets stay open.
 | Content moderation | Workers AI — `@cf/meta/llama-3.2-11b-vision-instruct` | `env.AI` |
 | Image composition | Cloudflare Images binding (watermark, resize, QR draw) | `env.IMAGES` |
 | Object storage | R2 (selfies, caricatures, postcards) | `env.BUCKET` |
-| Metadata DB | D1 | `env.DB` |
-| Config | KV (scene prompts) | `env.CONFIG` |
+| Metadata DB | D1 (sessions, print_jobs, events, scenes, event_admins) | `env.DB` |
+| Event context cache | KV (short-TTL cache of event + scenes per slug) | `env.CONFIG` |
 | Static assets | Workers static assets | `env.ASSETS` |
 | Email | Cloudflare Email Service (`send_email` binding, currently stubbed — see gotcha #26) | `env.EMAIL` |
 | Event analytics | Workers Analytics Engine (`nyc_booth_events` dataset) | `env.ANALYTICS` |
@@ -255,34 +293,38 @@ Resource IDs:
 ```
 nyc-caricature-booth/
 ├── src/
-│   ├── index.ts              # Hono app, all test endpoints, page templates
+│   ├── index.ts              # Hono app, admin event UI, page templates, test endpoints
 │   ├── env.d.ts              # Ambient Env augmentation for secrets (ADMIN_PASSWORD)
 │   ├── lib/
+│   │   ├── event-ctx.ts      # loadEventContext, listEvents, loadEvent, loadAllScenes, cache
+│   │   ├── types.ts          # EventRecord, SceneRecord, EventContext interfaces
 │   │   ├── moderation.ts     # Llama 3.2 Vision moderation helper (shared)
 │   │   ├── flux.ts           # FLUX.2 klein 4B image-gen helper (shared)
-│   │   ├── scenes.ts         # Scene type + loadScenes / loadSceneById (KV)
-│   │   ├── postcard.ts       # 1800×1200 postcard composer + QR PNG encoder
+│   │   ├── scenes.ts         # Legacy scene helpers (test endpoints only) + findScene
+│   │   ├── postcard.ts       # 1800×1200 postcard composer (two optional watermarks)
 │   │   ├── email.ts          # Postcard email helper (stubbed — see gotcha #26)
 │   │   ├── admin-auth.ts     # HMAC cookie signing + Hono auth middleware (10.1)
 │   │   ├── admin-data.ts     # loadAdminSessions + loadAdminStats (10.2/10.3)
 │   │   └── analytics.ts      # AE trackEvent + queryAE helpers (11.4)
+│   ├── components/
+│   │   └── wordmark.ts       # renderSceneOptions helper
 │   ├── session/
 │   │   └── session.ts        # SessionDO (one DO per session, hibernating WS)
 │   ├── workflows/
-│   │   └── caricature.ts     # CaricatureWorkflow (WorkflowEntrypoint)
+│   │   └── caricature.ts     # CaricatureWorkflow (prompt composed at runtime)
 │   └── styles/
 │       └── app.css           # Tailwind input (compiled to public/app.css)
 ├── public/
-│   ├── cloudflare-logo.png   # source logo (used as asset + in watermark)
-│   ├── watermark.png         # "I [logo] NY" watermark (built by Python script)
+│   ├── cloudflare-logo.png   # source logo (used as asset)
 │   └── app.css               # generated Tailwind (gitignored)
-├── scripts/
-│   └── build-watermark.py    # rebuilds public/watermark.png
 ├── seed/
-│   └── scenes.json           # 6 NYC scene definitions (seeded into KV)
+│   └── scenes.json           # Dev reference — legacy scene definitions (not runtime)
 ├── migrations/
 │   ├── 0001_initial.sql      # sessions table
-│   └── 0002_workflow_columns.sql  # adds scene_id, caricature_key, postcard_key, …
+│   ├── 0002_workflow_columns.sql  # adds scene_id, caricature_key, postcard_key, …
+│   ├── 0003_print_jobs.sql   # print_jobs table
+│   ├── 0004_email_optin.sql  # email column on sessions
+│   └── 0005_multi_event.sql  # events, scenes, event_admins tables + event_id FKs
 ├── print-agent/              # standalone Node agent (runs on Mac mini at booth)
 │   ├── src/
 │   │   ├── index.ts          # poll loop + job handler entry point
@@ -314,17 +356,14 @@ npm run deploy
 # Regenerate Env types after binding changes
 npx wrangler types
 
-# Rebuild watermark PNG
-python3 scripts/build-watermark.py
-
 # Type check
 npx tsc --noEmit
 
 # Apply D1 migrations
 npx wrangler d1 migrations apply nyc-booth-db --remote
 
-# Seed scenes into KV
-npx wrangler kv key put --binding=CONFIG --remote scenes --path=seed/scenes.json
+# Wipe local D1 and re-apply (after schema changes during dev)
+rm -rf .wrangler/state/v3/d1 && npx wrangler d1 migrations apply nyc-booth-db --local
 
 # Print agent (run from print-agent/ directory)
 cd print-agent && cp .env.example .env  # defaults work out of the box
@@ -362,75 +401,89 @@ Lives at **`/admin`**, password-gated. The cookie lasts 24h.
   - 📧 **Resend email** — re-fires the digital-copy email for sessions that
     opted in. Currently a no-op in terms of actual send (email is stubbed —
     see gotcha #26) but the wiring is complete.
-- **Top-level controls:**
-  - ♻️ **Re-seed scenes** — pushes the bundled `seed/scenes.json` into KV.
-    Requires a `wrangler deploy` first if you've edited the JSON (see gotcha #29).
+- **Event management:** `/admin/events` — full CRUD for events (list, create, tabbed
+  editor with branding/copy/scenes/watermarks/danger zone). Scenes are managed per-event
+  with add/edit/delete/reorder. Two watermarks (left + right) per event. Clone creates
+  a draft copy.
 - **Toasts:** Notyf via CDN. Slide-in from the bottom-right, click to dismiss.
 
 ---
 
 ## Endpoint map
 
-### Kiosk app (Phase 6 — live)
-- `GET /kiosk` — idle screen
-- `GET /kiosk/capture` — selfie capture (getUserMedia)
-- `POST /api/kiosk/selfie` — uploads selfie to R2, returns `{ sessionId, selfieKey }`
-- `GET /kiosk/scene` — 2×3 scene picker (server-rendered from KV)
-- `GET /kiosk/review` — review screen with "Make my postcard" CTA
-- `POST /api/kiosk/start` — validates `{ sessionId, selfieKey, sceneId }`, mints workflow, returns `{ instanceId, statusUrl }`
-- `GET /kiosk/status/:instanceId?session=<sid>` — live stepper (SessionDO WebSocket)
-- `GET /kiosk/done?session=<sid>` — done screen: postcard, QR, opt-in Print button (polls for completion), countdown
-- `POST /api/kiosk/print` — body `{ sessionId }`, enqueues a `print_jobs` row (idempotent)
-- `GET /api/kiosk/print/:jobId/status` — returns `{ status, printedAt?, errorMsg? }` — polled by /kiosk/done every 2s
-- `GET /api/kiosk/qr?url=<encoded>` — returns `qrPng(url, 400)` as `image/png` (origin-locked)
+All kiosk, gallery, and session routes are **event-scoped** under
+`/e/:eventSlug/...`. The event middleware loads event config + scenes from
+D1 (cached in KV) and injects `EventContext` into the Hono context.
 
-### Big screen display (Phase 7 — live)
-- `GET /display` — gallery of last 8 completed postcards (30s polling, shimmer, QR)
-- `GET /api/display/feed` — JSON feed of last 8 completed sessions for client polling
+### Event-scoped kiosk app (Phase 6)
+- `GET /e/:slug/kiosk` — idle screen
+- `GET /e/:slug/kiosk/capture` — selfie capture (getUserMedia)
+- `POST /e/:slug/api/kiosk/selfie` — uploads selfie to R2, returns `{ sessionId, selfieKey }`
+- `GET /e/:slug/kiosk/scene` — scene picker (server-rendered from D1 scenes)
+- `GET /e/:slug/kiosk/review` — review screen with "Make my postcard" CTA
+- `POST /e/:slug/api/kiosk/start` — validates & mints workflow, returns `{ instanceId, statusUrl }`
+- `GET /e/:slug/kiosk/status/:instanceId?session=<sid>` — live stepper (SessionDO WebSocket)
+- `GET /e/:slug/kiosk/done?session=<sid>` — done screen: postcard, QR, Print button, countdown
+- `POST /e/:slug/api/kiosk/print` — enqueues a `print_jobs` row (idempotent)
+- `GET /e/:slug/api/kiosk/print/:jobId/status` — print job status (polled every 2s)
+- `GET /e/:slug/api/kiosk/qr?url=<encoded>` — QR PNG (origin-locked)
 
-### Admin dashboard (Phase 10 + 11 — live)
-- `GET /admin/login` — password form (uses `page()` shell)
-- `POST /admin/login` — verify password, set signed cookie, redirect to `next`
-- `GET /admin/logout` — clear cookie, redirect to `/admin/login`
-- `GET /admin` — dashboard: stat cards, sessions-by-scene pills, last 30
-  sessions table with per-row actions
-- `GET /admin/metrics` — Analytics Engine event counts + hourly timeline (last 24h)
-- `GET /api/admin/sessions` — last 30 sessions joined to most-recent print
-  job; polled every 10s from `/admin`
-- `GET /api/admin/stats` — aggregate counts + AVG pipeline + scene breakdown
-- `GET /api/admin/metrics` — AE SQL API queries for event counts + timeline (JSON)
-- `POST /api/admin/reprint/:id` — force a fresh print job (no idempotency,
-  use this from staff tools, NOT `/api/kiosk/print`)
-- `POST /api/admin/resend-email/:id` — re-fire `sendPostcardEmail()` via
-  `waitUntil` for a session with an email on file
-- `POST /api/admin/reseed-scenes` — push bundled `seed/scenes.json` into KV
+### Event-scoped gallery (Phase 7)
+- `GET /e/:slug/gallery` — gallery of last 8 completed postcards (30s polling)
+- `GET /e/:slug/api/gallery/feed` — JSON feed for client polling
+
+### Admin dashboard (Phase 10 + 11)
+- `GET /admin/login` — password form
+- `POST /admin/login` — verify password, set signed cookie, redirect
+- `GET /admin/logout` — clear cookie
+- `GET /admin` — dashboard: stat cards, sessions table, per-row actions
+- `GET /admin/metrics` — Analytics Engine event counts + hourly timeline
+- `GET /api/admin/sessions` — last 30 sessions (polled every 10s)
+- `GET /api/admin/stats` — aggregate counts + scene breakdown
+- `GET /api/admin/metrics` — AE SQL queries (JSON)
+- `POST /api/admin/reprint/:id` — force a fresh print job (unconditional)
+- `POST /api/admin/resend-email/:id` — re-fire postcard email
 - `DELETE /api/admin/session/:id` — purge all data for a session (D1, R2, DO)
 
+### Admin event management
+- `GET /admin/events` — event list (card layout, responsive)
+- `GET /admin/events/new` — create event form
+- `POST /api/admin/events` — create event
+- `GET /admin/events/:eventId` — tabbed event editor (branding/copy/scenes/watermarks/danger)
+- `PUT /api/admin/events/:eventId` — update event fields
+- `DELETE /api/admin/events/:eventId` — delete event + cascade
+- `POST /api/admin/events/:eventId/clone` — clone event (draft, -copy suffix)
+- `POST /api/admin/events/:eventId/scenes` — add scene
+- `PUT /api/admin/events/:eventId/scenes/:sceneId` — update scene
+- `DELETE /api/admin/events/:eventId/scenes/:sceneId` — delete scene
+- `PUT /api/admin/events/:eventId/scenes/reorder` — reorder scenes
+- `POST /api/admin/events/:eventId/watermark` — upload watermark (right)
+- `DELETE /api/admin/events/:eventId/watermark` — delete watermark (right)
+- `POST /api/admin/events/:eventId/watermark-left` — upload watermark (left)
+- `DELETE /api/admin/events/:eventId/watermark-left` — delete watermark (left)
+
 ### Public landing
-- `GET /` — production landing page: hero, "how it works", Cloudflare tech strip, link to `/kiosk` and `/privacy`. No dev links.
-- `GET /p/:id` — digital pickup landing (shows postcard for UUID sessions, email opt-in form, download, share)
-- `POST /api/p/:id/email` — body `{ email }`, stores email opt-in in D1 + triggers postcard email (stubbed)
-- `GET /privacy` — privacy & data handling page (placeholder copy — needs legal review, see TODO comments)
+- `GET /` — event list or redirect to single active event
+- `GET /p/:id` — digital pickup landing (postcard, email opt-in, download, share)
+- `POST /api/p/:id/email` — email opt-in (stubbed send — see gotcha #26)
+- `GET /privacy` — privacy & data handling page (placeholder — needs legal review)
 - `GET /api/health` — returns `{ status, step }`
 
 ### Image proxies + scenes
-- `GET /api/run-img?key=...` — R2 image proxy (constrained to `runs/` and `kiosk/` prefixes)
-- `GET /api/scene-grid-img?key=...` — R2 image proxy (constrained to `prompt-spike/` prefix; used by the dev scene-grid page)
-- `GET /api/scenes` — returns the 6 scenes from KV
+- `GET /api/run-img?key=...` — R2 image proxy (`runs/` and `kiosk/` prefixes)
+- `GET /api/scene-grid-img?key=...` — R2 image proxy (`prompt-spike/` prefix, dev only)
 
 ### Session DO live socket
-- `GET /api/session/:id/ws` — WebSocket upgrade → proxied to the DO's hibernating socket. Used by the kiosk status screen.
+- `GET /api/session/:id/ws` — WebSocket upgrade → SessionDO
 
 ### Print agent (polled by Mac mini)
-- `GET /api/print-agent/jobs?limit=5` — returns pending print jobs from D1
+- `GET /api/print-agent/jobs?limit=5` — pending print jobs from D1
 - `POST /api/print-agent/jobs/:id/ack` — mark a job `printed` or `failed`
 
 ### Internal dev endpoints (not linked from production UI)
 A handful of `/test-*` (HTML form pages) and `/api/test-*` (handlers) routes
-remain in `src/index.ts` for local debugging — they aren't reachable from the
-homepage or admin dashboard anymore but still resolve if you know the URL.
-`GET /api/test-print-job` has been removed; staff can use the "Retry print"
-action on any completed session in `/admin` to exercise the print pipeline.
+remain in `src/index.ts` for local debugging. They use the legacy bundled
+`seed/scenes.json` (not event-scoped D1 scenes).
 
 ---
 
@@ -453,7 +506,7 @@ action on any completed session in `/admin` to exercise the print pipeline.
 15. **Capture screen mirrors the preview UI but NOT the canvas frame.** The `<video>` and frozen `<img>` previews use `-scale-x-100` so the user sees themselves naturally; the canvas-to-blob capture path draws the un-mirrored frame so text on shirts stays readable for FLUX/moderation.
 16. **Two storage prefixes for R2 selfies now:** legacy `workflow-test/<sessionId>/selfie.<ext>` (used by `/test-workflow-moderate` POST) and `kiosk/<sessionId>/selfie.jpg` (used by the new kiosk capture screen). `/api/run-img` accepts both `runs/` and `kiosk/` prefixes; the `workflow-test/` prefix is intentionally NOT readable through that proxy (test endpoints don't render uploaded selfies).
 17. **Kiosk session id is minted by the upload endpoint, not the client.** `POST /api/kiosk/selfie` generates `crypto.randomUUID()`, returns it, and the client stashes it. `POST /api/kiosk/start` passes that same sessionId so the SessionDO ID matches the R2 prefix matches the digital-pickup URL.
-18. **`/api/scenes` returns `{ count, scenes: [...] }`, not a bare array.** Don't accidentally iterate the wrapper object on the client — always read `.scenes`. The scene picker renders server-side to avoid this entirely; only the QR/done flow references it.
+18. **Scenes are loaded from D1 via `EventContext`, not KV.** The scene picker renders server-side from `eventCtx.scenes` (loaded per-event). Legacy `/api/scenes` still exists for test endpoints but reads from the bundled JSON seed, not the D1 event data.
 19. **`state.sessionId` from the SessionDO can be `"(unset)"`** if the DO seeds itself via `ensureState` before the workflow's first `markStep` call. Always prefer the server-injected `sessionId` from the `?session=` query param (confirmed UUID) over `state.sessionId` from the WS frame when building redirect URLs or stashing to sessionStorage. This was the root cause of the QR-unavailable bug on `/kiosk/done`.
 20. **Printed postcard has no QR baked in** (removed in step 6.6). The QR for digital pickup lives only on the `/kiosk/done` screen (header, top-right, points to `/p/:sessionId`). The `/test-postcard` dev endpoint still passes `qrUrl` to `buildPostcard` so the QR feature is still testable.
 21. **`/api/kiosk/qr` is origin-locked.** The `url` param must start with the Worker's own origin or the endpoint returns 403. This prevents it being used as an open QR-code proxy.
@@ -464,7 +517,7 @@ action on any completed session in `/admin` to exercise the print pipeline.
 26. **Email sending is stubbed.** The `send_email` binding (`env.EMAIL`) is wired and the `sendPostcardEmail` helper in `src/lib/email.ts` composes a full HTML + text email, but it currently logs to console instead of calling `env.EMAIL.send()`. To enable real sending: (a) onboard a domain to Cloudflare Email Service + add SPF/DKIM DNS records, (b) update `FROM_ADDRESS` in `src/lib/email.ts`, (c) uncomment the real send block and remove the stub. The email is fired via `waitUntil` on opt-in — failures don't block the API response.
 27. **Two print endpoints exist on purpose.** `POST /api/kiosk/print` is **idempotent** — only inserts a `print_jobs` row if no `pending`/`printing`/`printed` job exists for that session (only `failed` is re-queuable). That protects the public kiosk button from spam-tap duplicates. `POST /api/admin/reprint/:id` (Phase 10.4) is **unconditional** — always inserts a new row regardless of what's already there. Staff need this for physical jams, blurry copies, second postcards, or recovering when D1 says `printed` but the agent crashed mid-print. The admin "Retry print" button calls the admin endpoint, NOT the kiosk endpoint. Never wire admin UIs to `/api/kiosk/print`.
 28. **Admin cookie is `Secure`, so it won't be set on plain HTTP.** Local `wrangler dev` runs on `http://localhost:8787` by default; logging in there will appear to "work" (303 response) but the browser silently drops the `Secure` cookie and you'll be bounced back to `/admin/login`. Two workarounds: (a) run wrangler with HTTPS, or (b) temporarily flip the `Secure` flag in `src/lib/admin-auth.ts` for local dev. Production is fine — Workers always serves over HTTPS.
-29. **`seed/scenes.json` is imported into the Worker bundle**, not read at runtime. `src/index.ts` does `import scenesSeed from "../seed/scenes.json"` so the JSON is captured at build time and shipped inside the Worker. `POST /api/admin/reseed-scenes` writes that bundled copy into KV. Editing `seed/scenes.json` requires a `wrangler deploy` to take effect; running the admin "Re-seed scenes" button against an old deploy will write the old scenes. `tsconfig.json` has `resolveJsonModule: true` for the import to type-check.
+29. **`seed/scenes.json` is a dev reference only.** Production scenes live in the D1 `scenes` table, managed per-event via the admin UI at `/admin/events/:eventId` (Scenes tab). The bundled JSON is still imported by `src/lib/scenes.ts` for legacy `/test-*` dev endpoints, but no production route reads it. The admin "Re-seed scenes" button has been removed.
 30. **Worker secrets aren't picked up by `wrangler types`.** `npx wrangler types` only generates bindings declared in `wrangler.jsonc`. Secrets set via `wrangler secret put` (like `ADMIN_PASSWORD`) need a manual TypeScript augmentation. `src/env.d.ts` declares `interface Env { ADMIN_PASSWORD: string }` and `tsconfig.json`'s `include` lists `src/**/*.d.ts` so it's picked up alongside the generated `worker-configuration.d.ts`. Re-running `wrangler types` won't wipe it because it lives in a separate file. Add future secrets the same way.
 31. **Escape sequences in inline `<script>` blocks.** All client JS lives inside TypeScript template literals (backticks). TypeScript processes `\n`, `\t` etc. as escape sequences in template literals, injecting real newlines into the rendered `<script>` block. A JS `"..."` string can't span multiple lines, so this produces a `SyntaxError` that silently breaks the entire IIFE. Use `"\\n"` (double-escaped) so the rendered output contains the literal `\n` that JS interprets at runtime. Caught and fixed in the admin delete confirm dialog.
 32. **R2 lifecycle rules are bucket-level, not in `wrangler.jsonc`.** Applied via `wrangler r2 bucket lifecycle add` CLI command. Two rules: `expire-kiosk-selfies-30d` (prefix `kiosk/`, 30 days) and `expire-run-artifacts-30d` (prefix `runs/`, 30 days). `public/` and root objects are not affected. Verify with `wrangler r2 bucket lifecycle list nyc-booth-images`.
@@ -517,7 +570,7 @@ action on any completed session in `/admin` to exercise the print pipeline.
 - 6.5 ✅ Live status screen (4-step stepper, SessionDO WebSocket)
 - 6.6 ✅ Done screen (postcard, QR, 60s countdown, auto-return to idle)
 
-### Phase 7 — Big Screen App ✅
+### Phase 7 — Gallery ✅
 - 7.1 ✅ Static gallery layout (recent caricatures + QR + project info)
 - 7.2 ✅ Periodic refresh from D1 for new finished postcards
 - 7.3 ✅ Idle animation / branding pass
@@ -540,7 +593,7 @@ action on any completed session in `/admin` to exercise the print pipeline.
 - 10.1 ✅ Auth gate (signed cookie + Hono middleware)
 - 10.2 ✅ Live booth state (last 30 sessions table + `/api/admin/sessions`)
 - 10.3 ✅ Stats panel (six stat cards + scene breakdown + `/api/admin/stats`)
-- 10.4 ✅ Manual controls (force reprint, resend email, re-seed scenes, seed test print job)
+- 10.4 ✅ Manual controls (force reprint, resend email)
 
 ### Phase 11 — Hardening & Polish ✅
 - 11.1 ✅ Error states (camera retry, friendly errors, R2 fallback, poll cap, print failure UX, moderation path)
@@ -559,36 +612,30 @@ action on any completed session in `/admin` to exercise the print pipeline.
 
 1. **Printer model** — ✅ Decided: **DNP DS620A**. Driver implemented (`DnpDs620Printer`). Set `PRINTER_DRIVER=dnp` and `PRINTER_NAME=<CUPS name>` in `print-agent/.env`. Find the CUPS name with `lpstat -p -d` after installing the DNP macOS driver.
 2. **Designer assets** — DevRel resources will be sourced; build with Cloudflare brand defaults in the meantime.
-3. **Scene prompts** — Locked in `seed/scenes.json`. May need refinement after step 2.3 visual review (user has not yet flagged issues).
-4. **Big screen reveal animation** — design pass during week 2.
+3. **Scene prompts** — Managed per-event via admin UI. Workflow composes final prompt at runtime: `event.scene_style_preamble` + `scene.prompt` + `event.scene_constraints`.
+4. **Gallery reveal animation** — design pass during week 2.
 5. **Privacy copy / ToS micro-text** — placeholder live at `/privacy` with `TODO(legal)` comments. Needs legal review before event.
 
 ---
 
 ## Phase 7 plan (complete ✅)
 
-Big Screen App — a separate display (TV/monitor) that shows a gallery of
-recently completed caricatures + project info + QR to start a session.
-No real-time per-session feed (that's the iPad's job). Refreshes on a slow
-interval from D1.
-
-Agreed scope (slimmed down from original plan — see architectural pivot):
+Gallery — a passive display (TV/monitor) that shows recently completed
+caricatures + event branding + QR. No real-time per-session feed (that's
+the iPad's job). Refreshes on a slow interval from D1.
 
 ### 7.1 — Static gallery layout
-- New route `GET /display` using the standard `page()` shell (not `kioskPage`)
-- Shows the last 6–8 completed postcards from D1 (`SELECT * FROM sessions WHERE status='completed' ORDER BY completed_at DESC LIMIT 8`)
+- Route `GET /e/:slug/gallery` using the standard `page()` shell (not `kioskPage`)
+- Shows the last 6–8 completed postcards from D1 for the event
 - Each card: postcard image from R2 via `/api/run-img`, scene name, timestamp
-- Cloudflare brand header + "I 🧡 NY" wordmark + "Tap below to get yours" CTA
+- Header uses event name + tagline, optional watermarks from R2
 - No interactivity — this is a passive display
 
 ### 7.2 — Periodic refresh
-- Client-side `setInterval` every 30s that re-fetches a new `/api/display/feed`
-  endpoint returning `{ sessions: [...] }` from D1
+- Client-side `setInterval` every 30s that re-fetches `/e/:slug/api/gallery/feed`
 - Only re-renders cards that changed (diff by sessionId) to avoid flash
-- Add `GET /api/display/feed` that returns the last 8 completed sessions
-  (sessionId, sceneId, sceneName, postcardKey, completedAt)
 
 ### 7.3 — Branding pass
 - Idle animation (subtle shimmer / floating particles in brand colours)
 - "Built end-to-end on Cloudflare" tech badge
-- QR pointing to the production URL for people who want to learn more
+- QR pointing to the event URL

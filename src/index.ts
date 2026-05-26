@@ -1,36 +1,17 @@
-import { Hono, type Context } from "hono";
+import { Hono, type Context } from 'hono';
 
-import { moderateImage } from "./lib/moderation";
-import { runFlux } from "./lib/flux";
-import { runReplicate } from "./lib/replicate";
-import { loadScenes, type Scene } from "./lib/scenes";
-import {
-	POSTCARD_H,
-	POSTCARD_W,
-	buildPostcard,
-	newPostcardId,
-	qrPng,
-} from "./lib/postcard";
-import { sendPostcardEmail } from "./lib/email";
-import { trackEvent } from "./lib/analytics";
-import {
-	adminAuthMiddleware,
-	clearAdminCookie,
-	setAdminCookie,
-	signAdminToken,
-} from "./lib/admin-auth";
-import {
-	type AdminSessionRow,
-	type AdminStats,
-	loadAdminSessions,
-	loadAdminStats,
-} from "./lib/admin-data";
-import { loadEventContext, listEvents } from "./lib/event-ctx";
-import type { EventContext } from "./lib/types";
-import { renderSceneOptions } from "./components/wordmark";
-// Bundled scenes seed — used by the admin "Re-seed scenes" control to push
-// the canonical scene definitions into KV without needing wrangler CLI.
-import scenesSeed from "../seed/scenes.json";
+import { moderateImage } from './lib/moderation';
+import { runFlux } from './lib/flux';
+import { runReplicate } from './lib/replicate';
+import { loadScenes, type Scene } from './lib/scenes';
+import { POSTCARD_H, POSTCARD_W, buildPostcard, newPostcardId, qrPng } from './lib/postcard';
+import { sendPostcardEmail } from './lib/email';
+import { trackEvent } from './lib/analytics';
+import { adminAuthMiddleware, clearAdminCookie, setAdminCookie, signAdminToken } from './lib/admin-auth';
+import { type AdminSessionRow, type AdminStats, loadAdminSessions, loadAdminStats } from './lib/admin-data';
+import { loadEventContext, listEvents, loadEvent, loadAllScenes, invalidateEventCache } from './lib/event-ctx';
+import type { EventContext, EventRecord, SceneRecord } from './lib/types';
+import { renderSceneOptions } from './components/wordmark';
 
 // ---------------------------------------------------------------------------
 // Hono type augmentation for event-scoped routes
@@ -51,8 +32,8 @@ type EventEnv = { Bindings: Env; Variables: EventVars };
 /** Shorthand for the event-scoped Hono context. */
 type EventCtx = Context<EventEnv>;
 
-export { CaricatureWorkflow } from "./workflows/caricature";
-export { SessionDO } from "./session/session";
+export { CaricatureWorkflow } from './workflows/caricature';
+export { SessionDO } from './session/session';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -66,14 +47,14 @@ const app = new Hono<{ Bindings: Env }>();
 
 const eventApp = new Hono<EventEnv>();
 
-eventApp.use("*", async (c, next) => {
-	const eventId = c.req.param("eventId");
+eventApp.use('*', async (c, next) => {
+	const eventId = c.req.param('eventId');
 	if (!eventId) return c.notFound();
 	const ctx = await loadEventContext(c.env, eventId);
 	if (!ctx) {
 		return c.html(
 			page(
-				"Event not found",
+				'Event not found',
 				`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 					<div class="text-center max-w-xl">
 						<div class="text-6xl mb-6">🔍</div>
@@ -88,8 +69,8 @@ eventApp.use("*", async (c, next) => {
 			404,
 		);
 	}
-	c.set("eventCtx", ctx);
-	c.set("basePath", `/e/${eventId}`);
+	c.set('eventCtx', ctx);
+	c.set('basePath', `/e/${eventId}`);
 	await next();
 });
 
@@ -101,12 +82,7 @@ eventApp.use("*", async (c, next) => {
 
 /** Escape a string for safe interpolation inside an HTML attribute value. */
 const escapeAttr = (s: string): string =>
-	s
-		.replace(/&/g, "&amp;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
+	s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const page = (title: string, body: string) => `<!doctype html>
 <html lang="en">
@@ -157,9 +133,9 @@ const kioskPage = (title: string, body: string) => `<!doctype html>
 	</body>
 </html>`;
 
-eventApp.get("/", async (c) => {
-	const { event } = c.get("eventCtx");
-	const basePath = c.get("basePath");
+eventApp.get('/', async (c) => {
+	const { event } = c.get('eventCtx');
+	const basePath = c.get('basePath');
 	return c.html(
 		page(
 			`${event.name} — AI Caricature Booth`,
@@ -245,8 +221,8 @@ eventApp.get("/", async (c) => {
 	);
 });
 
-app.get("/api/health", (c) => {
-	return c.json({ status: "ok", step: "11.4" });
+app.get('/api/health', (c) => {
+	return c.json({ status: 'ok', step: '11.4' });
 });
 
 // ---------------------------------------------------------------------------
@@ -257,8 +233,8 @@ app.get("/api/health", (c) => {
 // are exempt inside the middleware itself.
 // ---------------------------------------------------------------------------
 
-app.use("/admin/*", adminAuthMiddleware());
-app.use("/api/admin/*", adminAuthMiddleware());
+app.use('/admin/*', adminAuthMiddleware());
+app.use('/api/admin/*', adminAuthMiddleware());
 
 // ---- Admin server-side rendering helpers (10.2) -----------------------------
 
@@ -269,25 +245,25 @@ app.use("/api/admin/*", adminAuthMiddleware());
  */
 function escapeScriptJson(json: string): string {
 	return json
-		.replace(/<\/script/gi, "<\\/script")
-		.replace(/\u2028/g, "\\u2028")
-		.replace(/\u2029/g, "\\u2029");
+		.replace(/<\/script/gi, '<\\/script')
+		.replace(/\u2028/g, '\\u2028')
+		.replace(/\u2029/g, '\\u2029');
 }
 
 /** Status pill class — must match the client-side `statusClass` in /admin JS. */
 function adminStatusClass(s: string): string {
-	if (s === "completed") return "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30";
-	if (s === "errored") return "bg-red-500/20 text-red-300 ring-red-400/30";
-	if (!s || s === "pending") return "bg-white/10 text-white/60 ring-white/20";
-	return "bg-amber-500/20 text-amber-300 ring-amber-400/30";
+	if (s === 'completed') return 'bg-emerald-500/20 text-emerald-300 ring-emerald-400/30';
+	if (s === 'errored') return 'bg-red-500/20 text-red-300 ring-red-400/30';
+	if (!s || s === 'pending') return 'bg-white/10 text-white/60 ring-white/20';
+	return 'bg-amber-500/20 text-amber-300 ring-amber-400/30';
 }
 
 function adminPrintClass(s: string | null): string {
-	if (s === "printed") return "bg-emerald-500/20 text-emerald-300 ring-emerald-400/30";
-	if (s === "failed") return "bg-red-500/20 text-red-300 ring-red-400/30";
-	if (s === "printing") return "bg-cf-orange/20 text-cf-orange ring-cf-orange/30";
-	if (s === "pending") return "bg-amber-500/20 text-amber-300 ring-amber-400/30";
-	return "bg-white/5 text-white/40 ring-white/10";
+	if (s === 'printed') return 'bg-emerald-500/20 text-emerald-300 ring-emerald-400/30';
+	if (s === 'failed') return 'bg-red-500/20 text-red-300 ring-red-400/30';
+	if (s === 'printing') return 'bg-cf-orange/20 text-cf-orange ring-cf-orange/30';
+	if (s === 'pending') return 'bg-amber-500/20 text-amber-300 ring-amber-400/30';
+	return 'bg-white/5 text-white/40 ring-white/10';
 }
 
 /**
@@ -301,7 +277,7 @@ function adminTimeTag(secs: number | null): string {
 }
 
 function adminFmtDuration(ms: number | null): string {
-	if (ms == null) return "—";
+	if (ms == null) return '—';
 	if (ms < 1000) return `${ms} ms`;
 	const s = Math.round(ms / 1000);
 	if (s < 60) return `${s}s`;
@@ -310,23 +286,18 @@ function adminFmtDuration(ms: number | null): string {
 }
 
 function escapeHtml(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;");
+	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function adminFmtAvg(secs: number | null): string {
-	if (secs == null) return "—";
+	if (secs == null) return '—';
 	if (secs < 60) return `${secs.toFixed(1)}s`;
 	const m = Math.floor(secs / 60);
 	const s = Math.round(secs - m * 60);
 	return `${m}m ${s}s`;
 }
 
-function statCard(label: string, value: string, accentCls = "text-white"): string {
+function statCard(label: string, value: string, accentCls = 'text-white'): string {
 	return (
 		`<div class="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">` +
 		`<div class="text-[10px] uppercase tracking-widest text-white/40">${escapeHtml(label)}</div>` +
@@ -337,12 +308,12 @@ function statCard(label: string, value: string, accentCls = "text-white"): strin
 
 function renderAdminStatCards(stats: AdminStats): string {
 	return (
-		statCard("Total", String(stats.totalSessions)) +
-		statCard("Completed", String(stats.completed), "text-emerald-300") +
-		statCard("Errored", String(stats.errored), "text-red-300") +
-		statCard("Avg pipeline", adminFmtAvg(stats.avgPipelineSec)) +
-		statCard("Emails", String(stats.emailsCollected), "text-cf-orange") +
-		statCard("Printed", String(stats.postcardsPrinted), "text-cf-orange")
+		statCard('Total', String(stats.totalSessions)) +
+		statCard('Completed', String(stats.completed), 'text-emerald-300') +
+		statCard('Errored', String(stats.errored), 'text-red-300') +
+		statCard('Avg pipeline', adminFmtAvg(stats.avgPipelineSec)) +
+		statCard('Emails', String(stats.emailsCollected), 'text-cf-orange') +
+		statCard('Printed', String(stats.postcardsPrinted), 'text-cf-orange')
 	);
 }
 
@@ -359,7 +330,7 @@ function renderAdminSceneBreakdown(stats: AdminStats): string {
 				`<span class="font-mono text-cf-orange">${s.count}</span>` +
 				`</span>`,
 		)
-		.join("");
+		.join('');
 }
 
 function renderAdminTableBody(rows: AdminSessionRow[]): string {
@@ -369,22 +340,22 @@ function renderAdminTableBody(rows: AdminSessionRow[]): string {
 	return rows
 		.map((r) => {
 			const shortId = r.sessionId.slice(0, 8);
-			const status = r.status || "pending";
-			const printStatus = r.printStatus ?? "—";
+			const status = r.status || 'pending';
+			const printStatus = r.printStatus ?? '—';
 			return (
 				`<tr class="hover:bg-white/[0.03]">` +
 				`<td class="px-4 py-3 font-mono text-xs text-white/80">${escapeHtml(shortId)}</td>` +
 				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminStatusClass(status)}">${escapeHtml(status)}</span></td>` +
-				`<td class="px-4 py-3 text-white/80">${escapeHtml(r.sceneName ?? "—")}</td>` +
+				`<td class="px-4 py-3 text-white/80">${escapeHtml(r.sceneName ?? '—')}</td>` +
 				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${adminTimeTag(r.createdAt)}</td>` +
 				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${escapeHtml(adminFmtDuration(r.pipelineDurationMs))}</td>` +
-				`<td class="px-4 py-3 text-white/60">${escapeHtml(r.emailMasked ?? "—")}</td>` +
+				`<td class="px-4 py-3 text-white/60">${escapeHtml(r.emailMasked ?? '—')}</td>` +
 				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminPrintClass(r.printStatus)}">${escapeHtml(printStatus)}</span></td>` +
 				`<td class="px-4 py-3 text-right whitespace-nowrap">${renderAdminRowActions(r)}</td>` +
 				`</tr>`
 			);
 		})
-		.join("");
+		.join('');
 }
 
 /**
@@ -401,7 +372,7 @@ function renderAdminTableBody(rows: AdminSessionRow[]): string {
  */
 function renderAdminRowActions(r: AdminSessionRow): string {
 	const buttons: string[] = [];
-	const isCompleted = r.status === "completed" && !!r.postcardKey;
+	const isCompleted = r.status === 'completed' && !!r.postcardKey;
 	if (isCompleted) {
 		buttons.push(
 			`<button type="button"
@@ -431,26 +402,25 @@ function renderAdminRowActions(r: AdminSessionRow): string {
 			🗑️ Delete
 		</button>`,
 	);
-	return `<div class="inline-flex items-center gap-1.5 justify-end">${buttons.join("")}</div>`;
+	return `<div class="inline-flex items-center gap-1.5 justify-end">${buttons.join('')}</div>`;
 }
 
 /**
  * Login form. Plain HTML, single password field. Honors a `?next=` redirect
  * target (only relative URLs, to avoid open-redirects).
  */
-app.get("/admin/login", (c) => {
-	const next = c.req.query("next") ?? "/admin";
-	const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/admin";
-	const errMsg = c.req.query("err") === "1" ? "Wrong password." : "";
+app.get('/admin/login', (c) => {
+	const next = c.req.query('next') ?? '/admin';
+	const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/admin';
+	const errMsg = c.req.query('err') === '1' ? 'Wrong password.' : '';
 
 	return c.html(
 		page(
-			"Admin · Caricature Booth",
+			'Admin · Caricature Booth',
 			`<main class="min-h-screen flex flex-col items-center justify-center px-6">
 				<div class="w-full max-w-sm">
 					<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50 justify-center">
-						<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-						<span>Booth admin</span>
+						Booth admin
 					</div>
 					<h1 class="mt-3 text-3xl font-bold text-center">Sign in</h1>
 					<p class="mt-1 text-sm text-white/60 text-center">Restricted — staff only.</p>
@@ -467,7 +437,7 @@ app.get("/admin/login", (c) => {
 							autocomplete="current-password"
 							class="rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-base text-white outline-none focus:border-cf-orange/60 focus:bg-white/10"
 						/>
-						${errMsg ? `<p class="text-sm text-red-400">${errMsg}</p>` : ""}
+						${errMsg ? `<p class="text-sm text-red-400">${errMsg}</p>` : ''}
 						<button
 							type="submit"
 							class="mt-2 rounded-full bg-cf-orange px-6 py-3 text-base font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition"
@@ -489,32 +459,32 @@ app.get("/admin/login", (c) => {
  * On success: sets the cookie and 303-redirects to `next` (or /admin).
  * On failure: redirects back to /admin/login?err=1&next=<next>.
  */
-app.post("/admin/login", async (c) => {
+app.post('/admin/login', async (c) => {
 	const password = c.env.ADMIN_PASSWORD;
 	if (!password) {
-		return c.text("ADMIN_PASSWORD not configured", 500);
+		return c.text('ADMIN_PASSWORD not configured', 500);
 	}
 
-	let submitted = "";
-	let next = "/admin";
-	const ct = c.req.header("content-type") ?? "";
+	let submitted = '';
+	let next = '/admin';
+	const ct = c.req.header('content-type') ?? '';
 
-	if (ct.includes("application/json")) {
+	if (ct.includes('application/json')) {
 		try {
 			const body = (await c.req.json()) as { password?: unknown; next?: unknown };
-			submitted = typeof body.password === "string" ? body.password : "";
-			if (typeof body.next === "string") next = body.next;
+			submitted = typeof body.password === 'string' ? body.password : '';
+			if (typeof body.next === 'string') next = body.next;
 		} catch {
 			// fall through with empty submitted → will fail
 		}
 	} else {
 		const form = await c.req.parseBody();
-		submitted = typeof form.password === "string" ? form.password : "";
-		if (typeof form.next === "string") next = form.next;
+		submitted = typeof form.password === 'string' ? form.password : '';
+		if (typeof form.next === 'string') next = form.next;
 	}
 
 	// Sanitize `next` — must be a same-origin path.
-	const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/admin";
+	const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/admin';
 
 	if (submitted !== password) {
 		return c.redirect(`/admin/login?err=1&next=${encodeURIComponent(safeNext)}`, 302);
@@ -528,9 +498,9 @@ app.post("/admin/login", async (c) => {
 /**
  * Logout — clear the cookie and bounce to the login screen.
  */
-app.get("/admin/logout", (c) => {
+app.get('/admin/logout', (c) => {
 	clearAdminCookie(c);
-	return c.redirect("/admin/login", 302);
+	return c.redirect('/admin/login', 302);
 });
 
 /**
@@ -542,21 +512,21 @@ app.get("/admin/logout", (c) => {
  *
  * GET /admin/metrics
  */
-app.get("/admin/metrics", async (c) => {
+app.get('/admin/metrics', async (c) => {
 	const apiToken = c.env.AE_API_TOKEN;
-	const accountId = "e9bc21da719562a3e45d77de7dd042de";
+	const accountId = 'e9bc21da719562a3e45d77de7dd042de';
 
 	const noTokenHtml = `<main class="min-h-screen px-6 py-8 max-w-4xl mx-auto">
 		<header class="flex items-center justify-between mb-8">
 			<div>
 				<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50">
-					<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-					<span>Booth admin</span>
+					Booth admin
 				</div>
 				<h1 class="mt-1 text-2xl font-bold">Event metrics</h1>
 			</div>
 			<div class="flex items-center gap-4 text-xs text-white/50">
 				<a href="/admin" class="text-cf-orange hover:text-white underline underline-offset-4">\u2190 Dashboard</a>
+				<a href="/admin/events" class="text-cf-orange hover:text-white underline underline-offset-4">Events</a>
 				<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
 			</div>
 		</header>
@@ -567,24 +537,24 @@ app.get("/admin/metrics", async (c) => {
 	</main>`;
 
 	if (!apiToken) {
-		return c.html(page("Metrics \u2014 Admin", noTokenHtml));
+		return c.html(page('Metrics \u2014 Admin', noTokenHtml));
 	}
 
 	return c.html(
 		page(
-			"Metrics \u2014 Admin",
+			'Metrics \u2014 Admin',
 			`<main class="min-h-screen px-6 py-8 max-w-4xl mx-auto">
 				<header class="flex items-center justify-between mb-8">
 					<div>
 						<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50">
-							<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-							<span>Booth admin</span>
+							Booth admin
 						</div>
 						<h1 class="mt-1 text-2xl font-bold">Event metrics</h1>
 						<p class="text-xs text-white/40 mt-1">Last 24 hours \u2014 from Analytics Engine</p>
 					</div>
 					<div class="flex items-center gap-4 text-xs text-white/50">
 						<a href="/admin" class="text-cf-orange hover:text-white underline underline-offset-4">\u2190 Dashboard</a>
+						<a href="/admin/events" class="text-cf-orange hover:text-white underline underline-offset-4">Events</a>
 						<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
 					</div>
 				</header>
@@ -689,18 +659,18 @@ app.get("/admin/metrics", async (c) => {
  *
  * Returns { counts: { eventName: number }, timeline: [{ hour, count }] }
  */
-app.get("/api/admin/metrics", async (c) => {
+app.get('/api/admin/metrics', async (c) => {
 	const apiToken = c.env.AE_API_TOKEN;
 	if (!apiToken) {
-		return c.json({ error: "AE_API_TOKEN not configured" }, 503);
+		return c.json({ error: 'AE_API_TOKEN not configured' }, 503);
 	}
 
-	const accountId = "e9bc21da719562a3e45d77de7dd042de";
+	const accountId = 'e9bc21da719562a3e45d77de7dd042de';
 	const aeUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`;
 
 	async function aeQuery(sql: string) {
 		const res = await fetch(aeUrl, {
-			method: "POST",
+			method: 'POST',
 			headers: { Authorization: `Bearer ${apiToken}` },
 			body: sql,
 		});
@@ -758,22 +728,18 @@ app.get("/api/admin/metrics", async (c) => {
  * Server-renders the initial sessions table; client polls /api/admin/sessions
  * every 10s and re-renders the <tbody>. Stats / manual controls land in 10.3 + 10.4.
  */
-app.get("/admin", async (c) => {
-	const [rows, stats] = await Promise.all([
-		loadAdminSessions(c.env),
-		loadAdminStats(c.env),
-	]);
+app.get('/admin', async (c) => {
+	const [rows, stats] = await Promise.all([loadAdminSessions(c.env), loadAdminStats(c.env)]);
 	const initialJson = JSON.stringify({ sessions: rows, stats });
 
 	return c.html(
 		page(
-			"Admin dashboard",
+			'Admin dashboard',
 			`<main class="min-h-screen px-6 py-8 max-w-6xl mx-auto">
 				<header class="flex items-center justify-between mb-8">
 					<div>
 						<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50">
-							<img src="/cloudflare-logo.png" alt="" class="h-4 w-4" />
-							<span>Booth admin</span>
+							Booth admin
 						</div>
 						<h1 class="mt-1 text-2xl font-bold">Live sessions</h1>
 					</div>
@@ -782,20 +748,13 @@ app.get("/admin", async (c) => {
 							<span class="size-2 rounded-full bg-emerald-400 animate-pulse"></span>
 							<span>Auto-refresh · 10s</span>
 						</span>
+						<a href="/admin/events" class="text-cf-orange hover:text-white underline underline-offset-4">Events</a>
 						<a href="/admin/metrics" class="text-cf-orange hover:text-white underline underline-offset-4">Metrics</a>
 						<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
 					</div>
 				</header>
 
-				<section class="mb-6 flex flex-wrap items-center gap-2">
-					<button
-						type="button"
-						id="admin-reseed-btn"
-						class="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-4 py-2 text-xs text-white/80 hover:border-white/30 hover:text-white disabled:opacity-50 transition"
-					>
-						♻️ Re-seed scenes
-					</button>
-				</section>
+
 
 				<!-- Notyf toast library (loaded only on /admin) -->
 				<link rel="stylesheet" href="https://unpkg.com/notyf@3.10.0/notyf.min.css" />
@@ -1129,23 +1088,7 @@ app.get("/admin", async (c) => {
 					});
 				});
 
-				// Re-seed scenes button
-				var reseedBtn = document.getElementById("admin-reseed-btn");
-				reseedBtn.addEventListener("click", function () {
-					if (reseedBtn.disabled) return;
-					if (!confirm("Re-write the bundled scenes.json into KV?")) return;
-					reseedBtn.disabled = true;
-					callJson("/api/admin/reseed-scenes", { method: "POST" })
-						.then(function (j) {
-							toast("Re-seeded " + (j.count || "?") + " scenes into KV");
-						})
-						.catch(function (err) {
-							toast("Failed: " + err.message, true);
-						})
-						.finally(function () {
-							reseedBtn.disabled = false;
-						});
-				});
+
 
 				// Initial paint is server-rendered; format the timestamp placeholders
 				// in the viewer's locale right away so they don't show "…" for 10s.
@@ -1163,7 +1106,7 @@ app.get("/admin", async (c) => {
  * Sessions JSON feed for the admin dashboard. Polled every 10s by /admin.
  * GET /api/admin/sessions  →  { sessions: AdminSessionRow[] }
  */
-app.get("/api/admin/sessions", async (c) => {
+app.get('/api/admin/sessions', async (c) => {
 	const rows = await loadAdminSessions(c.env);
 	return c.json({ sessions: rows });
 });
@@ -1172,7 +1115,7 @@ app.get("/api/admin/sessions", async (c) => {
  * Aggregate stats for the dashboard cards. Polled every 10s alongside sessions.
  * GET /api/admin/stats  →  AdminStats
  */
-app.get("/api/admin/stats", async (c) => {
+app.get('/api/admin/stats', async (c) => {
 	const stats = await loadAdminStats(c.env);
 	return c.json(stats);
 });
@@ -1188,15 +1131,13 @@ app.get("/api/admin/stats", async (c) => {
  *
  * POST /api/admin/reprint/:id
  */
-app.post("/api/admin/reprint/:id", async (c) => {
-	const id = c.req.param("id");
+app.post('/api/admin/reprint/:id', async (c) => {
+	const id = c.req.param('id');
 	if (!UUID_RE.test(id)) {
-		return c.json({ error: "invalid session id" }, 400);
+		return c.json({ error: 'invalid session id' }, 400);
 	}
 
-	const session = await c.env.DB.prepare(
-		"SELECT id, event_id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
-	)
+	const session = await c.env.DB.prepare('SELECT id, event_id, status, postcard_key, scene_name FROM sessions WHERE id = ?')
 		.bind(id)
 		.first<{
 			id: string;
@@ -1207,15 +1148,15 @@ app.post("/api/admin/reprint/:id", async (c) => {
 		}>();
 
 	if (!session) {
-		return c.json({ error: "session not found" }, 404);
+		return c.json({ error: 'session not found' }, 404);
 	}
-	if (session.status !== "completed" || !session.postcard_key) {
-		return c.json({ error: "session is not completed" }, 409);
+	if (session.status !== 'completed' || !session.postcard_key) {
+		return c.json({ error: 'session is not completed' }, 409);
 	}
 
 	const origin = new URL(c.req.url).origin;
 	const postcardUrl = `${origin}/p/${id}`;
-	const sceneName = session.scene_name ?? "Scene";
+	const sceneName = session.scene_name ?? 'Scene';
 
 	const result = await c.env.DB.prepare(
 		`INSERT INTO print_jobs (session_id, event_id, postcard_key, postcard_url, scene_name)
@@ -1226,14 +1167,12 @@ app.post("/api/admin/reprint/:id", async (c) => {
 		.first<{ id: string }>();
 
 	if (!result) {
-		return c.json({ error: "failed to enqueue reprint" }, 500);
+		return c.json({ error: 'failed to enqueue reprint' }, 500);
 	}
 
-	console.log(
-		`[admin-reprint] session=${id} jobId=${result.id} sceneName=${sceneName}`,
-	);
+	console.log(`[admin-reprint] session=${id} jobId=${result.id} sceneName=${sceneName}`);
 
-	return c.json({ ok: true, jobId: result.id, status: "pending" });
+	return c.json({ ok: true, jobId: result.id, status: 'pending' });
 });
 
 /**
@@ -1246,42 +1185,36 @@ app.post("/api/admin/reprint/:id", async (c) => {
  *
  * POST /api/admin/resend-email/:id
  */
-app.post("/api/admin/resend-email/:id", async (c) => {
-	const id = c.req.param("id");
+app.post('/api/admin/resend-email/:id', async (c) => {
+	const id = c.req.param('id');
 	if (!UUID_RE.test(id)) {
-		return c.json({ error: "invalid session id" }, 400);
+		return c.json({ error: 'invalid session id' }, 400);
 	}
 
-	const session = await c.env.DB.prepare(
-		"SELECT id, status, postcard_key, scene_name, email FROM sessions WHERE id = ?",
-	)
-		.bind(id)
-		.first<{
-			id: string;
-			status: string | null;
-			postcard_key: string | null;
-			scene_name: string | null;
-			email: string | null;
-		}>();
+	const session = await c.env.DB.prepare('SELECT id, status, postcard_key, scene_name, email FROM sessions WHERE id = ?').bind(id).first<{
+		id: string;
+		status: string | null;
+		postcard_key: string | null;
+		scene_name: string | null;
+		email: string | null;
+	}>();
 
 	if (!session) {
-		return c.json({ error: "session not found" }, 404);
+		return c.json({ error: 'session not found' }, 404);
 	}
-	if (session.status !== "completed" || !session.postcard_key) {
-		return c.json({ error: "session is not completed" }, 409);
+	if (session.status !== 'completed' || !session.postcard_key) {
+		return c.json({ error: 'session is not completed' }, 409);
 	}
 	if (!session.email) {
-		return c.json({ error: "no email on file for this session" }, 409);
+		return c.json({ error: 'no email on file for this session' }, 409);
 	}
 
 	const origin = new URL(c.req.url).origin;
 	const email = session.email;
 	const postcardKey = session.postcard_key;
-	const sceneName = session.scene_name ?? "Scene";
+	const sceneName = session.scene_name ?? 'Scene';
 
-	console.log(
-		`[admin-resend] session=${id} email=${email.slice(0, 3)}***`,
-	);
+	console.log(`[admin-resend] session=${id} email=${email.slice(0, 3)}***`);
 
 	c.executionCtx.waitUntil(
 		sendPostcardEmail(c.env, {
@@ -1299,20 +1232,7 @@ app.post("/api/admin/resend-email/:id", async (c) => {
 	return c.json({ ok: true, queued: true });
 });
 
-/**
- * Manual control: re-write the bundled scenes.json snapshot into KV.
- * Useful when the seed file has been updated in source but no one has
- * re-run the wrangler CLI seed command yet. Reads the JSON at module
- * bundle time, so a `wrangler deploy` is required to pick up new edits.
- *
- * POST /api/admin/reseed-scenes
- */
-app.post("/api/admin/reseed-scenes", async (c) => {
-	const payload = JSON.stringify(scenesSeed);
-	await c.env.CONFIG.put("scenes", payload);
-	console.log(`[admin-reseed] wrote ${scenesSeed.length} scenes to KV`);
-	return c.json({ ok: true, count: scenesSeed.length });
-});
+
 
 /**
  * Manual control: delete all data for a session (privacy right-to-delete).
@@ -1328,38 +1248,31 @@ app.post("/api/admin/reseed-scenes", async (c) => {
  *
  * DELETE /api/admin/session/:id
  */
-app.delete("/api/admin/session/:id", async (c) => {
-	const id = c.req.param("id");
+app.delete('/api/admin/session/:id', async (c) => {
+	const id = c.req.param('id');
 	if (!UUID_RE.test(id)) {
-		return c.json({ error: "invalid session id" }, 400);
+		return c.json({ error: 'invalid session id' }, 400);
 	}
 
 	// Check the session exists before doing destructive work.
-	const session = await c.env.DB.prepare(
-		"SELECT id, selfie_key, caricature_key, postcard_key FROM sessions WHERE id = ?",
-	)
-		.bind(id)
-		.first<{
-			id: string;
-			selfie_key: string | null;
-			caricature_key: string | null;
-			postcard_key: string | null;
-		}>();
+	const session = await c.env.DB.prepare('SELECT id, selfie_key, caricature_key, postcard_key FROM sessions WHERE id = ?').bind(id).first<{
+		id: string;
+		selfie_key: string | null;
+		caricature_key: string | null;
+		postcard_key: string | null;
+	}>();
 
 	if (!session) {
-		return c.json({ error: "session not found" }, 404);
+		return c.json({ error: 'session not found' }, 404);
 	}
 
 	const deleted: string[] = [];
 
 	// 1. Delete R2 objects. We try all known key patterns; missing keys
 	//    are silently ignored by R2.delete().
-	const r2Keys = [
-		`kiosk/${id}/selfie.jpg`,
-		session.selfie_key,
-		session.caricature_key,
-		session.postcard_key,
-	].filter((k): k is string => !!k);
+	const r2Keys = [`kiosk/${id}/selfie.jpg`, session.selfie_key, session.caricature_key, session.postcard_key].filter(
+		(k): k is string => !!k,
+	);
 
 	// Deduplicate (selfie_key may equal the kiosk/ path).
 	const uniqueR2Keys = [...new Set(r2Keys)];
@@ -1373,33 +1286,1230 @@ app.delete("/api/admin/session/:id", async (c) => {
 	}
 
 	// 2. Delete print_jobs rows.
-	const printResult = await c.env.DB.prepare(
-		"DELETE FROM print_jobs WHERE session_id = ?",
-	)
-		.bind(id)
-		.run();
+	const printResult = await c.env.DB.prepare('DELETE FROM print_jobs WHERE session_id = ?').bind(id).run();
 	const printDeleted = printResult.meta.changes ?? 0;
 	if (printDeleted > 0) deleted.push(`d1:print_jobs(${printDeleted})`);
 
 	// 3. Delete the sessions row.
-	await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
-	deleted.push("d1:sessions");
+	await c.env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(id).run();
+	deleted.push('d1:sessions');
 
 	// 4. Force-delete the SessionDO (best-effort — it may already be gone).
 	try {
 		const doId = c.env.SESSION.idFromName(id);
 		const stub = c.env.SESSION.get(doId);
 		await stub.delete();
-		deleted.push("do:session");
+		deleted.push('do:session');
 	} catch (err) {
 		// DO may have already self-deleted via alarm — that's fine.
 		console.warn(`[admin-delete] DO delete failed session=${id}: ${err}`);
 	}
 
-	console.log(`[admin-delete] session=${id} deleted=[${deleted.join(", ")}]`);
-	trackEvent(c.env.ANALYTICS, "session.deleted", id);
+	console.log(`[admin-delete] session=${id} deleted=[${deleted.join(', ')}]`);
+	trackEvent(c.env.ANALYTICS, 'session.deleted', id);
 
 	return c.json({ ok: true, sessionId: id, deleted });
+});
+
+// ---------------------------------------------------------------------------
+// Admin: Event management (Phase 5)
+//
+// CRUD for events and scenes. All routes are behind adminAuthMiddleware.
+// ---------------------------------------------------------------------------
+
+/** Slug validation: lowercase alphanumeric + hyphens, 3-64 chars. */
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
+
+/** Shared admin nav for event management pages. */
+function adminEventNav(crumbs: string = ''): string {
+	return `<header class="flex items-center justify-between mb-8">
+		<div>
+			<div class="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-white/50">
+				Booth admin
+			</div>
+			${crumbs}
+		</div>
+		<div class="flex items-center gap-4 text-xs text-white/50">
+			<a href="/admin" class="text-cf-orange hover:text-white underline underline-offset-4">Dashboard</a>
+			<a href="/admin/events" class="text-cf-orange hover:text-white underline underline-offset-4">Events</a>
+			<a href="/admin/logout" class="text-cf-orange hover:text-white underline underline-offset-4">Sign out</a>
+		</div>
+	</header>`;
+}
+
+/** Status pill for event status. */
+function eventStatusPill(status: string): string {
+	const cls =
+		status === 'active'
+			? 'bg-emerald-500/20 text-emerald-300 ring-emerald-400/30'
+			: status === 'archived'
+				? 'bg-amber-500/20 text-amber-300 ring-amber-400/30'
+				: 'bg-white/10 text-white/60 ring-white/20';
+	return `<span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${cls}">${escapeHtml(status)}</span>`;
+}
+
+// ---- Event list page -------------------------------------------------------
+
+app.get('/admin/events', async (c) => {
+	const events = await listEvents(c.env);
+
+	// Get session counts per event
+	const countRows = await c.env.DB.prepare(`SELECT event_id, COUNT(*) as cnt FROM sessions GROUP BY event_id`).all<{
+		event_id: string | null;
+		cnt: number;
+	}>();
+	const counts = new Map(countRows.results.map((r) => [r.event_id, r.cnt]));
+
+	const eventCards = events
+		.map((ev) => {
+			const cnt = counts.get(ev.id) ?? 0;
+			const canDelete = ev.status === 'draft' && cnt === 0;
+			return `<div class="px-4 py-3 hover:bg-white/[0.03] border-b border-white/5 last:border-b-0" data-event-card="${escapeAttr(ev.id)}">
+				<div class="flex items-center gap-3 flex-wrap">
+					<a href="/e/${escapeAttr(ev.id)}" target="_blank" rel="noopener"
+						class="font-semibold text-sm text-white hover:text-cf-orange transition inline-flex items-center gap-1.5">
+						${escapeHtml(ev.name)} <span class="text-xs">\u2197</span>
+					</a>
+					${eventStatusPill(ev.status)}
+					<span class="hidden sm:inline font-mono text-xs text-white/40">${escapeHtml(ev.id)}</span>
+					<span class="hidden sm:inline text-white/40 text-xs">\u00B7</span>
+					<span class="hidden sm:inline text-white/50 text-xs">${cnt} session${cnt !== 1 ? 's' : ''}</span>
+				</div>
+				<div class="flex items-center gap-1.5 mt-2">
+					<a href="/admin/events/${escapeAttr(ev.id)}" aria-label="Edit event" data-tooltip="Edit"
+						class="inline-flex items-center gap-1 rounded-full border border-cf-orange/40 bg-cf-orange/10 px-2.5 sm:px-3 py-1 text-xs text-cf-orange hover:bg-cf-orange/20 transition">
+						\u270E<span class="hidden sm:inline"> Edit</span>
+					</a>
+					<button type="button" data-action="clone-event" data-event-id="${escapeAttr(ev.id)}" aria-label="Clone event" data-tooltip="Clone"
+						class="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/[0.04] px-2.5 sm:px-3 py-1 text-xs text-white/80 hover:border-white/30 transition">
+						\u2398<span class="hidden sm:inline"> Clone</span>
+					</button>
+					${
+						canDelete
+							? `<button type="button" data-action="delete-event" data-event-id="${escapeAttr(ev.id)}" aria-label="Delete event" data-tooltip="Delete"
+						class="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2.5 sm:px-3 py-1 text-xs text-red-400 hover:bg-red-500/20 transition">
+						\u2716<span class="hidden sm:inline"> Delete</span>
+					</button>`
+							: ''
+					}
+				</div>
+			</div>`;
+		})
+		.join('');
+
+	return c.html(
+		page(
+			'Events — Admin',
+			`<main class="min-h-screen px-6 py-8 max-w-6xl mx-auto">
+				${adminEventNav(`<h1 class="mt-1 text-2xl font-bold">Events</h1>`)}
+
+				<link rel="stylesheet" href="https://unpkg.com/notyf@3.10.0/notyf.min.css" />
+				<script src="https://unpkg.com/notyf@3.10.0/notyf.min.js"></script>
+				<style>
+					.notyf__toast { font-family: inherit; border-radius: 12px; }
+					.notyf__toast--success { background: #f6821f; }
+					.notyf__toast--error   { background: #ef4444; }
+					.notyf__icon { background: transparent !important; }
+					.notyf__icon-success, .notyf__icon-error { background: transparent !important; border-color: rgba(255,255,255,0.9) !important; }
+					.notyf__icon-success::after, .notyf__icon-success::before,
+					.notyf__icon-error::after,   .notyf__icon-error::before { background: #ffffff !important; }
+					.notyf__message { font-weight: 500; }
+				</style>
+
+				<section class="mb-6 flex items-center justify-between">
+					<p class="hidden sm:block text-sm text-white/50">${events.length} event${events.length !== 1 ? 's' : ''}</p>
+					<a href="/admin/events/new"
+						class="inline-flex items-center gap-2 rounded-full bg-cf-orange px-5 py-2 text-sm font-semibold text-black hover:bg-cf-orange-dark transition sm:ml-auto">
+						+ Create event
+					</a>
+				</section>
+
+				<section class="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+					${eventCards || `<div class="px-4 py-8 text-center text-white/40">No events yet.</div>`}
+				</section>
+			</main>
+			<script>
+			(function () {
+				var notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
+				function toast(msg, isErr) { notyf[isErr ? "error" : "success"](msg); }
+
+				document.addEventListener("click", function (e) {
+					var btn = e.target.closest("[data-action]");
+					if (!btn) return;
+					var action = btn.getAttribute("data-action");
+					var eventId = btn.getAttribute("data-event-id");
+
+					if (action === "clone-event") {
+						btn.disabled = true;
+						fetch("/api/admin/events/" + encodeURIComponent(eventId) + "/clone", { method: "POST", credentials: "same-origin" })
+							.then(function (r) { return r.json(); })
+							.then(function (j) {
+								if (j.error) { toast(j.error, true); btn.disabled = false; return; }
+								toast("Cloned as " + j.newEventId);
+								setTimeout(function () { window.location.href = "/admin/events/" + encodeURIComponent(j.newEventId); }, 800);
+							})
+							.catch(function (err) { toast("Clone failed: " + err.message, true); btn.disabled = false; });
+					}
+
+					if (action === "delete-event") {
+						if (!confirm("Delete event '" + eventId + "'? This cannot be undone.")) return;
+						btn.disabled = true;
+						fetch("/api/admin/events/" + encodeURIComponent(eventId), { method: "DELETE", credentials: "same-origin" })
+							.then(function (r) { return r.json(); })
+							.then(function (j) {
+								if (j.error) { toast(j.error, true); btn.disabled = false; return; }
+								toast("Deleted");
+								var card = document.querySelector('[data-event-card="' + eventId + '"]');
+								if (card) card.remove();
+							})
+							.catch(function (err) { toast("Delete failed: " + err.message, true); btn.disabled = false; });
+					}
+				});
+			})();
+			</script>`,
+		),
+	);
+});
+
+// ---- Create event form ------------------------------------------------------
+
+app.get('/admin/events/new', (c) => {
+	return c.html(
+		page(
+			'New event — Admin',
+			`<main class="min-h-screen px-6 py-8 max-w-2xl mx-auto">
+				${adminEventNav(`<h1 class="mt-1 text-2xl font-bold">Create event</h1>`)}
+
+				<form id="create-form" class="space-y-4">
+					<div>
+						<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Name</label>
+						<input name="name" type="text" required placeholder="NYC Tech Week 2026"
+							class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-cf-orange/50 focus:outline-none" />
+					</div>
+					<div>
+						<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Slug (URL-safe ID)</label>
+						<input name="id" type="text" required placeholder="nyc-tech-week-2026" pattern="[a-z0-9][a-z0-9\\-]{1,62}[a-z0-9]"
+							class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white font-mono placeholder:text-white/30 focus:border-cf-orange/50 focus:outline-none" />
+						<p class="mt-1 text-xs text-white/40">Lowercase letters, numbers, hyphens. 3–64 chars.</p>
+					</div>
+					<div>
+						<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Status</label>
+						<select name="status"
+							class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white focus:border-cf-orange/50 focus:outline-none">
+							<option value="draft">Draft</option>
+							<option value="active">Active</option>
+							<option value="archived">Archived</option>
+						</select>
+					</div>
+					<button type="submit"
+						class="inline-flex items-center gap-2 rounded-full bg-cf-orange px-6 py-3 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+						Create event
+					</button>
+				</form>
+			</main>
+			<script>
+			(function () {
+				var form = document.getElementById("create-form");
+				var nameInput = form.querySelector('[name="name"]');
+				var slugInput = form.querySelector('[name="id"]');
+				var slugEdited = false;
+
+				slugInput.addEventListener("input", function () { slugEdited = true; });
+				nameInput.addEventListener("input", function () {
+					if (slugEdited) return;
+					slugInput.value = nameInput.value
+						.toLowerCase()
+						.replace(/[^a-z0-9]+/g, "-")
+						.replace(/^-|-$/g, "")
+						.slice(0, 64);
+				});
+
+				form.addEventListener("submit", function (e) {
+					e.preventDefault();
+					var btn = form.querySelector('button[type="submit"]');
+					btn.disabled = true;
+					var body = {
+						id: slugInput.value,
+						name: nameInput.value,
+						status: form.querySelector('[name="status"]').value,
+					};
+					fetch("/api/admin/events", {
+						method: "POST",
+						credentials: "same-origin",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(body),
+					})
+						.then(function (r) { return r.json(); })
+						.then(function (j) {
+							if (j.error) { alert(j.error); btn.disabled = false; return; }
+							window.location.href = "/admin/events/" + encodeURIComponent(j.id);
+						})
+						.catch(function (err) { alert("Failed: " + err.message); btn.disabled = false; });
+				});
+			})();
+			</script>`,
+		),
+	);
+});
+
+// ---- Event editor -----------------------------------------------------------
+
+app.get('/admin/events/:eventId', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) {
+		return c.html(
+			page('Not found', `<main class="min-h-screen flex items-center justify-center"><p class="text-white/60">Event not found.</p></main>`),
+			404,
+		);
+	}
+	const scenes = await loadAllScenes(c.env, eventId);
+
+	// Session count for delete guard
+	const countRow = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM sessions WHERE event_id = ?`).bind(eventId).first<{ cnt: number }>();
+	const sessionCount = countRow?.cnt ?? 0;
+	const canDelete = ev.status === 'draft' && sessionCount === 0;
+
+	const scenesJson = escapeScriptJson(JSON.stringify(scenes));
+
+	return c.html(
+		page(
+			`${ev.name} — Admin`,
+			`<main class="min-h-screen px-6 py-8 max-w-4xl mx-auto">
+				${adminEventNav(`
+					<div class="flex items-center gap-2 mt-1">
+						<a href="/admin/events" class="text-cf-orange hover:text-white text-sm">\u2190 Events</a>
+						<span class="text-white/30">/</span>
+						<h1 class="text-2xl font-bold">${escapeHtml(ev.name)}</h1>
+						${eventStatusPill(ev.status)}
+					</div>
+				`)}
+
+				<link rel="stylesheet" href="https://unpkg.com/notyf@3.10.0/notyf.min.css" />
+				<script src="https://unpkg.com/notyf@3.10.0/notyf.min.js"></script>
+				<style>
+					.notyf__toast { font-family: inherit; border-radius: 12px; }
+					.notyf__toast--success { background: #f6821f; }
+					.notyf__toast--error   { background: #ef4444; }
+					.notyf__icon { background: transparent !important; }
+					.notyf__icon-success, .notyf__icon-error { background: transparent !important; border-color: rgba(255,255,255,0.9) !important; }
+					.notyf__icon-success::after, .notyf__icon-success::before,
+					.notyf__icon-error::after,   .notyf__icon-error::before { background: #ffffff !important; }
+					.notyf__message { font-weight: 500; }
+				</style>
+
+				<!-- Tabs -->
+				<nav class="flex gap-1 mb-6 border-b border-white/10 pb-px">
+					<button data-tab="settings" class="tab-btn px-4 py-2 text-sm rounded-t-lg border border-transparent -mb-px transition">Settings</button>
+					<button data-tab="branding" class="tab-btn px-4 py-2 text-sm rounded-t-lg border border-transparent -mb-px transition">Branding</button>
+					<button data-tab="copy" class="tab-btn px-4 py-2 text-sm rounded-t-lg border border-transparent -mb-px transition">Copy</button>
+					<button data-tab="scenes" class="tab-btn px-4 py-2 text-sm rounded-t-lg border border-transparent -mb-px transition">Scenes</button>
+					<button data-tab="prompts" class="tab-btn px-4 py-2 text-sm rounded-t-lg border border-transparent -mb-px transition">Prompts</button>
+				</nav>
+
+				<!-- Tab: Settings -->
+				<section data-panel="settings" class="tab-panel hidden">
+					<form id="settings-form" class="space-y-6 max-w-xl">
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Slug</label>
+							<input name="id" type="text" value="${escapeAttr(ev.id)}" pattern="[a-z0-9][a-z0-9\\-]{1,62}[a-z0-9]"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white font-mono focus:border-cf-orange/50 focus:outline-none" />
+							<p class="mt-1 text-xs text-white/40">Changing the slug changes all URLs for this event.</p>
+						</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Name</label>
+							<input name="name" type="text" value="${escapeAttr(ev.name)}" required
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white focus:border-cf-orange/50 focus:outline-none" />
+						</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Status</label>
+							<select name="status"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white focus:border-cf-orange/50 focus:outline-none">
+								<option value="draft" ${ev.status === 'draft' ? 'selected' : ''}>Draft</option>
+								<option value="active" ${ev.status === 'active' ? 'selected' : ''}>Active</option>
+								<option value="archived" ${ev.status === 'archived' ? 'selected' : ''}>Archived</option>
+							</select>
+						</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Timezone</label>
+							<input name="timezone" type="text" value="${escapeAttr(ev.timezone)}"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white focus:border-cf-orange/50 focus:outline-none" />
+						</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Privacy email</label>
+							<input name="privacy_email" type="email" value="${escapeAttr(ev.privacy_email)}"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white focus:border-cf-orange/50 focus:outline-none" />
+						</div>
+						<button type="submit" class="rounded-full bg-cf-orange px-6 py-2.5 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">Save settings</button>
+					</form>
+					${
+						canDelete
+							? `
+					<div class="mt-12 pt-8 border-t border-red-500/20">
+						<h3 class="text-sm font-semibold text-red-400 mb-2">Danger zone</h3>
+						<p class="text-xs text-white/50 mb-3">This event is a draft with no sessions. Deleting it is permanent.</p>
+						<button type="button" id="delete-event-btn"
+							class="rounded-full border border-red-500/40 bg-red-500/10 px-5 py-2 text-sm text-red-400 hover:bg-red-500/20 transition">
+							Delete event
+						</button>
+					</div>`
+							: ''
+					}
+				</section>
+
+				<!-- Tab: Branding -->
+				<section data-panel="branding" class="tab-panel hidden">
+					<div class="space-y-8 max-w-xl">
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-right watermark (PNG)</label>
+							<p class="text-xs text-white/40 mb-3">Composited onto the bottom-right corner of every postcard. Nothing is shown if not set.</p>
+							<div id="watermark-preview" class="mb-3">
+								${
+									ev.watermark_image_key
+										? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
+										<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark" alt="watermark" class="h-12" />
+										<button type="button" id="remove-watermark-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+									</div>`
+										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+								}
+							</div>
+							<form id="watermark-form" enctype="multipart/form-data" class="flex items-center gap-3">
+								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
+								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
+							</form>
+						</div>
+
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-left watermark (PNG)</label>
+							<p class="text-xs text-white/40 mb-3">Composited onto the bottom-left corner of every postcard. Nothing is shown if not set.</p>
+							<div id="watermark-left-preview" class="mb-3">
+								${
+									ev.watermark_image_key_left
+										? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
+										<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left" alt="watermark left" class="h-12" />
+										<button type="button" id="remove-watermark-left-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+									</div>`
+										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+								}
+							</div>
+							<form id="watermark-left-form" enctype="multipart/form-data" class="flex items-center gap-3">
+								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
+								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
+							</form>
+						</div>
+
+						<form id="branding-form" class="space-y-6">
+							<div>
+								<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Accent color</label>
+								<div class="flex items-center gap-3">
+									<input name="accent_color" type="text" value="${escapeAttr(ev.accent_color)}" placeholder="#f6821f"
+										class="w-40 rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white font-mono focus:border-cf-orange/50 focus:outline-none" />
+									<div id="color-swatch" class="size-10 rounded-lg border border-white/10" style="background:${escapeAttr(ev.accent_color)}"></div>
+								</div>
+							</div>
+							<button type="submit" class="rounded-full bg-cf-orange px-6 py-2.5 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">Save branding</button>
+						</form>
+					</div>
+				</section>
+
+				<!-- Tab: Copy -->
+				<section data-panel="copy" class="tab-panel hidden">
+					<form id="copy-form" class="space-y-6 max-w-xl">
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Tagline</label>
+							<p class="text-xs text-white/40 mb-2">Shown on the event landing page below the title.</p>
+							<input name="tagline" type="text" value="${escapeAttr(ev.tagline)}"
+								placeholder="Take a selfie, pick a scene, walk away with a printed postcard."
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-cf-orange/50 focus:outline-none" />
+						</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Kiosk idle subhead</label>
+							<p class="text-xs text-white/40 mb-2">Shown on the kiosk idle screen below the main heading.</p>
+							<input name="kiosk_idle_subhead" type="text" value="${escapeAttr(ev.kiosk_idle_subhead)}"
+								placeholder="Cloudflare Kiosk \u00B7 For more information on Cloudflare, visit cloudflare.com"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-cf-orange/50 focus:outline-none" />
+						</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Scene picker heading</label>
+							<p class="text-xs text-white/40 mb-2">Heading above the scene picker cards in the kiosk flow.</p>
+							<input name="scene_picker_heading" type="text" value="${escapeAttr(ev.scene_picker_heading)}"
+								placeholder="Pick your scene"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-cf-orange/50 focus:outline-none" />
+						</div>
+						<button type="submit" class="rounded-full bg-cf-orange px-6 py-2.5 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">Save copy</button>
+					</form>
+				</section>
+
+				<!-- Tab: Scenes -->
+				<section data-panel="scenes" class="tab-panel hidden">
+					<div id="scenes-container" class="space-y-3"></div>
+					<button type="button" id="add-scene-btn"
+						class="mt-4 inline-flex items-center gap-2 rounded-full bg-cf-orange px-5 py-2.5 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">
+						+ Add scene
+					</button>
+				</section>
+
+				<!-- Tab: Prompts -->
+				<section data-panel="prompts" class="tab-panel hidden">
+					<form id="prompts-form" class="space-y-6 max-w-xl">
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Style preamble</label>
+							<p class="text-xs text-white/40 mb-2">Prepended to every scene prompt. Describe the overall art style.</p>
+							<textarea name="scene_style_preamble" rows="4"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white focus:border-cf-orange/50 focus:outline-none">${escapeHtml(ev.scene_style_preamble ?? '')}</textarea>
+						</div>
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Constraints</label>
+							<p class="text-xs text-white/40 mb-2">Appended to every scene prompt. Negative constraints, safety rules, etc.</p>
+							<textarea name="scene_constraints" rows="4"
+								class="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white focus:border-cf-orange/50 focus:outline-none">${escapeHtml(ev.scene_constraints ?? '')}</textarea>
+						</div>
+						<button type="submit" class="rounded-full bg-cf-orange px-6 py-2.5 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">Save prompts</button>
+					</form>
+				</section>
+			</main>
+
+			<script id="scenes-data" type="application/json">${scenesJson}</script>
+			<script>
+			(function () {
+				var EVENT_ID = ${JSON.stringify(ev.id)};
+				var notyf = new Notyf({ duration: 3000, position: { x: "right", y: "top" } });
+				function toast(msg, isErr) { notyf[isErr ? "error" : "success"](msg); }
+
+				// ---- Tabs ----
+				var tabs = document.querySelectorAll(".tab-btn");
+				var panels = document.querySelectorAll(".tab-panel");
+				function activateTab(name) {
+					tabs.forEach(function (t) {
+						var active = t.getAttribute("data-tab") === name;
+						t.className = "tab-btn px-4 py-2 text-sm rounded-t-lg border -mb-px transition " +
+							(active ? "border-white/10 border-b-cf-ink bg-cf-ink text-white" : "border-transparent text-white/50 hover:text-white/80");
+					});
+					panels.forEach(function (p) {
+						p.classList.toggle("hidden", p.getAttribute("data-panel") !== name);
+					});
+					history.replaceState(null, "", "#" + name);
+				}
+				tabs.forEach(function (t) {
+					t.addEventListener("click", function () { activateTab(t.getAttribute("data-tab")); });
+				});
+				activateTab(location.hash.slice(1) || "settings");
+
+				// ---- Generic save helper ----
+				function saveFields(fields) {
+					return fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID), {
+						method: "PUT",
+						credentials: "same-origin",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(fields),
+					}).then(function (r) { return r.json(); })
+					.then(function (j) {
+						if (j.error) throw new Error(j.error);
+						// If slug changed, redirect to new URL
+						if (fields.id && fields.id !== EVENT_ID) {
+							window.location.href = "/admin/events/" + encodeURIComponent(fields.id);
+							return;
+						}
+						toast("Saved");
+					});
+				}
+
+				// ---- Settings form ----
+				document.getElementById("settings-form").addEventListener("submit", function (e) {
+					e.preventDefault();
+					var f = e.target;
+					saveFields({
+						id: f.querySelector('[name="id"]').value,
+						name: f.querySelector('[name="name"]').value,
+						status: f.querySelector('[name="status"]').value,
+						timezone: f.querySelector('[name="timezone"]').value,
+						privacy_email: f.querySelector('[name="privacy_email"]').value,
+					}).catch(function (err) { toast(err.message, true); });
+				});
+
+				// ---- Delete event ----
+				var delBtn = document.getElementById("delete-event-btn");
+				if (delBtn) {
+					delBtn.addEventListener("click", function () {
+						if (!confirm("Permanently delete this event?")) return;
+						delBtn.disabled = true;
+						fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID), { method: "DELETE", credentials: "same-origin" })
+							.then(function (r) { return r.json(); })
+							.then(function (j) {
+								if (j.error) { toast(j.error, true); delBtn.disabled = false; return; }
+								window.location.href = "/admin/events";
+							})
+							.catch(function (err) { toast(err.message, true); delBtn.disabled = false; });
+					});
+				}
+
+				// ---- Branding form ----
+				document.getElementById("branding-form").addEventListener("submit", function (e) {
+					e.preventDefault();
+					var f = e.target;
+					saveFields({
+						accent_color: f.querySelector('[name="accent_color"]').value,
+					}).catch(function (err) { toast(err.message, true); });
+				});
+
+				// Color swatch live preview
+				var accentInput = document.querySelector('[name="accent_color"]');
+				var swatch = document.getElementById("color-swatch");
+				if (accentInput && swatch) {
+					accentInput.addEventListener("input", function () { swatch.style.background = accentInput.value; });
+				}
+
+				// ---- Watermark upload (right) ----
+				document.getElementById("watermark-form").addEventListener("submit", function (e) {
+					e.preventDefault();
+					var form = e.target;
+					var fd = new FormData(form);
+					if (!fd.get("file") || !fd.get("file").size) { toast("Select a PNG file", true); return; }
+					fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/watermark", {
+						method: "POST", credentials: "same-origin", body: fd,
+					}).then(function (r) { return r.json(); })
+					.then(function (j) {
+						if (j.error) { toast(j.error, true); return; }
+						toast("Watermark uploaded");
+						setTimeout(function () { location.reload(); }, 600);
+					}).catch(function (err) { toast(err.message, true); });
+				});
+
+				// ---- Remove watermark (right) ----
+				var rmWm = document.getElementById("remove-watermark-btn");
+				if (rmWm) {
+					rmWm.addEventListener("click", function () {
+						rmWm.disabled = true;
+						fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/watermark", { method: "DELETE", credentials: "same-origin" })
+							.then(function (r) { return r.json(); })
+							.then(function (j) {
+								if (j.error) { toast(j.error, true); rmWm.disabled = false; return; }
+								toast("Watermark removed");
+								setTimeout(function () { location.reload(); }, 600);
+							}).catch(function (err) { toast(err.message, true); rmWm.disabled = false; });
+					});
+				}
+
+				// ---- Watermark upload (left) ----
+				document.getElementById("watermark-left-form").addEventListener("submit", function (e) {
+					e.preventDefault();
+					var form = e.target;
+					var fd = new FormData(form);
+					if (!fd.get("file") || !fd.get("file").size) { toast("Select a PNG file", true); return; }
+					fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/watermark-left", {
+						method: "POST", credentials: "same-origin", body: fd,
+					}).then(function (r) { return r.json(); })
+					.then(function (j) {
+						if (j.error) { toast(j.error, true); return; }
+						toast("Left watermark uploaded");
+						setTimeout(function () { location.reload(); }, 600);
+					}).catch(function (err) { toast(err.message, true); });
+				});
+
+				// ---- Remove watermark (left) ----
+				var rmWmL = document.getElementById("remove-watermark-left-btn");
+				if (rmWmL) {
+					rmWmL.addEventListener("click", function () {
+						rmWmL.disabled = true;
+						fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/watermark-left", { method: "DELETE", credentials: "same-origin" })
+							.then(function (r) { return r.json(); })
+							.then(function (j) {
+								if (j.error) { toast(j.error, true); rmWmL.disabled = false; return; }
+								toast("Left watermark removed");
+								setTimeout(function () { location.reload(); }, 600);
+							}).catch(function (err) { toast(err.message, true); rmWmL.disabled = false; });
+					});
+				}
+
+				// ---- Copy form ----
+				document.getElementById("copy-form").addEventListener("submit", function (e) {
+					e.preventDefault();
+					var f = e.target;
+					saveFields({
+						tagline: f.querySelector('[name="tagline"]').value,
+						kiosk_idle_subhead: f.querySelector('[name="kiosk_idle_subhead"]').value,
+						scene_picker_heading: f.querySelector('[name="scene_picker_heading"]').value,
+					}).catch(function (err) { toast(err.message, true); });
+				});
+
+				// ---- Prompts form ----
+				document.getElementById("prompts-form").addEventListener("submit", function (e) {
+					e.preventDefault();
+					var f = e.target;
+					saveFields({
+						scene_style_preamble: f.querySelector('[name="scene_style_preamble"]').value,
+						scene_constraints: f.querySelector('[name="scene_constraints"]').value,
+					}).catch(function (err) { toast(err.message, true); });
+				});
+
+				// ---- Scenes ----
+				var scenesData = JSON.parse(document.getElementById("scenes-data").textContent || "[]");
+				var container = document.getElementById("scenes-container");
+				var expanded = {};
+
+				function renderScenes() {
+					container.innerHTML = scenesData.map(function (s, idx) {
+						var isOpen = expanded[s.id];
+						return '<div class="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden" data-scene-id="' + escapeH(s.id) + '">'
+							+ '<div class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/[0.03]" data-toggle-scene="' + escapeH(s.id) + '">'
+							+ '<span class="text-lg">' + escapeH(s.emoji) + '</span>'
+							+ '<span class="font-semibold text-sm flex-1">' + escapeH(s.name) + '</span>'
+							+ '<label class="flex items-center gap-2 text-xs text-white/50" onclick="event.stopPropagation()">'
+							+   '<input type="checkbox" ' + (s.is_active ? "checked" : "") + ' data-active-toggle="' + escapeH(s.id) + '" class="accent-orange-500" />'
+							+   'Active'
+							+ '</label>'
+							+ (idx > 0 ? '<button type="button" data-move="up" data-scene-idx="' + idx + '" onclick="event.stopPropagation()" class="text-white/40 hover:text-white text-xs px-1">\u25B2</button>' : '<span class="w-5"></span>')
+							+ (idx < scenesData.length - 1 ? '<button type="button" data-move="down" data-scene-idx="' + idx + '" onclick="event.stopPropagation()" class="text-white/40 hover:text-white text-xs px-1">\u25BC</button>' : '<span class="w-5"></span>')
+							+ '<span class="text-white/30 text-sm">' + (isOpen ? "\u25B4" : "\u25BE") + '</span>'
+							+ '</div>'
+							+ (isOpen ? renderSceneForm(s) : '')
+							+ '</div>';
+					}).join("");
+				}
+
+				function renderSceneForm(s) {
+					return '<div class="px-4 pb-4 pt-2 border-t border-white/5 space-y-3">'
+						+ '<div class="grid grid-cols-2 gap-3">'
+						+ '<div><label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Name</label>'
+						+ '<input data-field="name" value="' + escapeA(s.name) + '" class="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white focus:border-cf-orange/50 focus:outline-none" /></div>'
+						+ '<div><label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Emoji</label>'
+						+ '<input data-field="emoji" value="' + escapeA(s.emoji) + '" maxlength="4" class="w-24 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white focus:border-cf-orange/50 focus:outline-none" /></div>'
+						+ '</div>'
+						+ '<div><label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Description</label>'
+						+ '<input data-field="description" value="' + escapeA(s.description) + '" class="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white focus:border-cf-orange/50 focus:outline-none" /></div>'
+						+ '<div><label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Prompt</label>'
+						+ '<textarea data-field="prompt" rows="5" class="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white font-mono focus:border-cf-orange/50 focus:outline-none">' + escapeH(s.prompt) + '</textarea></div>'
+						+ '<div class="flex items-center gap-3">'
+						+ '<button type="button" data-save-scene="' + escapeA(s.id) + '" class="rounded-full bg-cf-orange px-5 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Save scene</button>'
+						+ '<button type="button" data-delete-scene="' + escapeA(s.id) + '" class="rounded-full border border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-400 hover:bg-red-500/20 transition">Delete</button>'
+						+ '</div></div>';
+				}
+
+				function escapeH(s) {
+					return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+				}
+				function escapeA(s) { return escapeH(s); }
+
+				renderScenes();
+
+				// Scene interactions
+				container.addEventListener("click", function (e) {
+					var toggle = e.target.closest("[data-toggle-scene]");
+					if (toggle) {
+						var sid = toggle.getAttribute("data-toggle-scene");
+						expanded[sid] = !expanded[sid];
+						renderScenes();
+						return;
+					}
+
+					var moveBtn = e.target.closest("[data-move]");
+					if (moveBtn) {
+						var dir = moveBtn.getAttribute("data-move");
+						var idx = parseInt(moveBtn.getAttribute("data-scene-idx"), 10);
+						var swapIdx = dir === "up" ? idx - 1 : idx + 1;
+						if (swapIdx < 0 || swapIdx >= scenesData.length) return;
+						var tmp = scenesData[idx];
+						scenesData[idx] = scenesData[swapIdx];
+						scenesData[swapIdx] = tmp;
+						// Update sort_orders and save
+						var reorder = scenesData.map(function (s, i) { return { id: s.id, sort_order: i }; });
+						fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/scenes/reorder", {
+							method: "PUT", credentials: "same-origin",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify(reorder),
+						}).then(function (r) { return r.json(); })
+						.then(function (j) {
+							if (j.error) toast(j.error, true); else toast("Reordered");
+						}).catch(function (err) { toast(err.message, true); });
+						renderScenes();
+						return;
+					}
+
+					var saveBtn = e.target.closest("[data-save-scene]");
+					if (saveBtn) {
+						var sceneId = saveBtn.getAttribute("data-save-scene");
+						var card = container.querySelector('[data-scene-id="' + sceneId + '"]');
+						var body = {
+							name: card.querySelector('[data-field="name"]').value,
+							emoji: card.querySelector('[data-field="emoji"]').value,
+							description: card.querySelector('[data-field="description"]').value,
+							prompt: card.querySelector('[data-field="prompt"]').value,
+						};
+						saveBtn.disabled = true;
+						fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/scenes/" + encodeURIComponent(sceneId), {
+							method: "PUT", credentials: "same-origin",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify(body),
+						}).then(function (r) { return r.json(); })
+						.then(function (j) {
+							if (j.error) { toast(j.error, true); saveBtn.disabled = false; return; }
+							// Update local data
+							var s = scenesData.find(function (x) { return x.id === sceneId; });
+							if (s) { s.name = body.name; s.emoji = body.emoji; s.description = body.description; s.prompt = body.prompt; }
+							toast("Scene saved");
+							saveBtn.disabled = false;
+						}).catch(function (err) { toast(err.message, true); saveBtn.disabled = false; });
+						return;
+					}
+
+					var delBtn = e.target.closest("[data-delete-scene]");
+					if (delBtn) {
+						var sceneId = delBtn.getAttribute("data-delete-scene");
+						if (!confirm("Delete scene '" + sceneId + "'?")) return;
+						delBtn.disabled = true;
+						fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/scenes/" + encodeURIComponent(sceneId), {
+							method: "DELETE", credentials: "same-origin",
+						}).then(function (r) { return r.json(); })
+						.then(function (j) {
+							if (j.error) { toast(j.error, true); delBtn.disabled = false; return; }
+							scenesData = scenesData.filter(function (x) { return x.id !== sceneId; });
+							delete expanded[sceneId];
+							renderScenes();
+							toast("Scene deleted");
+						}).catch(function (err) { toast(err.message, true); delBtn.disabled = false; });
+						return;
+					}
+				});
+
+				// Active toggle
+				container.addEventListener("change", function (e) {
+					var toggle = e.target.closest("[data-active-toggle]");
+					if (!toggle) return;
+					var sceneId = toggle.getAttribute("data-active-toggle");
+					var isActive = toggle.checked ? 1 : 0;
+					fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/scenes/" + encodeURIComponent(sceneId), {
+						method: "PUT", credentials: "same-origin",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ is_active: isActive }),
+					}).then(function (r) { return r.json(); })
+					.then(function (j) {
+						if (j.error) { toast(j.error, true); toggle.checked = !toggle.checked; return; }
+						var s = scenesData.find(function (x) { return x.id === sceneId; });
+						if (s) s.is_active = isActive;
+						toast(isActive ? "Scene activated" : "Scene deactivated");
+					}).catch(function (err) { toast(err.message, true); toggle.checked = !toggle.checked; });
+				});
+
+				// Add scene
+				document.getElementById("add-scene-btn").addEventListener("click", function () {
+					var name = prompt("Scene name:");
+					if (!name) return;
+					var id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 64);
+					if (!id) { toast("Invalid name", true); return; }
+					var maxSort = scenesData.length > 0 ? Math.max.apply(null, scenesData.map(function (s) { return s.sort_order; })) : -1;
+					var body = {
+						id: id,
+						name: name,
+						emoji: "\uD83C\uDFA8",
+						description: "",
+						prompt: "",
+						sort_order: maxSort + 1,
+						is_active: 1,
+					};
+					fetch("/api/admin/events/" + encodeURIComponent(EVENT_ID) + "/scenes", {
+						method: "POST", credentials: "same-origin",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(body),
+					}).then(function (r) { return r.json(); })
+					.then(function (j) {
+						if (j.error) { toast(j.error, true); return; }
+						scenesData.push({
+							event_id: EVENT_ID, id: body.id, name: body.name, emoji: body.emoji,
+							description: body.description, prompt: body.prompt, sort_order: body.sort_order, is_active: body.is_active,
+						});
+						expanded[body.id] = true;
+						renderScenes();
+						toast("Scene created");
+					}).catch(function (err) { toast(err.message, true); });
+				});
+			})();
+			</script>`,
+		),
+	);
+});
+
+// ---- Admin event APIs -------------------------------------------------------
+
+/** Serve the right watermark image for admin preview. */
+app.get('/api/admin/events/:eventId/watermark', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev?.watermark_image_key) return c.notFound();
+	const obj = await c.env.BUCKET.get(ev.watermark_image_key);
+	if (!obj) return c.notFound();
+	return new Response(obj.body, {
+		headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache' },
+	});
+});
+
+/** Serve the left watermark image for admin preview. */
+app.get('/api/admin/events/:eventId/watermark-left', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev?.watermark_image_key_left) return c.notFound();
+	const obj = await c.env.BUCKET.get(ev.watermark_image_key_left);
+	if (!obj) return c.notFound();
+	return new Response(obj.body, {
+		headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache' },
+	});
+});
+
+/** Create a new event. */
+app.post('/api/admin/events', async (c) => {
+	const body = await c.req.json<{ id: string; name: string; status?: string }>();
+	if (!body.id || !body.name) return c.json({ error: 'id and name are required' }, 400);
+	if (!SLUG_RE.test(body.id)) return c.json({ error: 'Invalid slug. Lowercase letters, numbers, hyphens, 3–64 chars.' }, 400);
+
+	const status = body.status || 'draft';
+	if (!['draft', 'active', 'archived'].includes(status)) return c.json({ error: 'Invalid status' }, 400);
+
+	try {
+		await c.env.DB.prepare(`INSERT INTO events (id, name, status) VALUES (?, ?, ?)`).bind(body.id, body.name, status).run();
+	} catch (err: any) {
+		if (err?.message?.includes('UNIQUE constraint')) {
+			return c.json({ error: 'An event with this slug already exists' }, 409);
+		}
+		throw err;
+	}
+
+	return c.json({ ok: true, id: body.id });
+});
+
+/** Update an event's fields. Supports partial updates + slug rename. */
+app.put('/api/admin/events/:eventId', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+
+	const body = await c.req.json<Record<string, any>>();
+
+	// Allowed fields (the event table columns minus created_at/created_by)
+	const ALLOWED = new Set([
+		'id',
+		'name',
+		'status',
+		'accent_color',
+		'tagline',
+		'kiosk_idle_subhead',
+		'scene_picker_heading',
+		'scene_style_preamble',
+		'scene_constraints',
+		'timezone',
+		'privacy_email',
+	]);
+
+	const sets: string[] = [];
+	const vals: any[] = [];
+	for (const [key, val] of Object.entries(body)) {
+		if (!ALLOWED.has(key)) continue;
+		if (key === 'id') continue; // handled separately below
+		if (key === 'status' && !['draft', 'active', 'archived'].includes(val)) {
+			return c.json({ error: 'Invalid status' }, 400);
+		}
+		sets.push(`${key} = ?`);
+		vals.push(val === '' ? null : val);
+	}
+
+	// Handle slug rename
+	const newSlug = body.id;
+	const slugChanging = newSlug && newSlug !== eventId;
+	if (slugChanging) {
+		if (!SLUG_RE.test(newSlug)) return c.json({ error: 'Invalid slug' }, 400);
+		sets.push('id = ?');
+		vals.push(newSlug);
+	}
+
+	if (sets.length === 0) return c.json({ error: 'No valid fields to update' }, 400);
+
+	vals.push(eventId); // WHERE clause
+
+	try {
+		await c.env.DB.prepare(`UPDATE events SET ${sets.join(', ')} WHERE id = ?`)
+			.bind(...vals)
+			.run();
+	} catch (err: any) {
+		if (err?.message?.includes('UNIQUE constraint')) {
+			return c.json({ error: 'An event with this slug already exists' }, 409);
+		}
+		throw err;
+	}
+
+	// If slug changed, update FK references
+	if (slugChanging) {
+		await c.env.DB.batch([
+			c.env.DB.prepare(`UPDATE scenes SET event_id = ? WHERE event_id = ?`).bind(newSlug, eventId),
+			c.env.DB.prepare(`UPDATE sessions SET event_id = ? WHERE event_id = ?`).bind(newSlug, eventId),
+			c.env.DB.prepare(`UPDATE print_jobs SET event_id = ? WHERE event_id = ?`).bind(newSlug, eventId),
+			c.env.DB.prepare(`UPDATE event_admins SET event_id = ? WHERE event_id = ?`).bind(newSlug, eventId),
+		]);
+		await invalidateEventCache(c.env, eventId);
+	}
+
+	await invalidateEventCache(c.env, slugChanging ? newSlug : eventId);
+
+	return c.json({ ok: true, id: slugChanging ? newSlug : eventId });
+});
+
+/** Delete a draft event with no sessions. */
+app.delete('/api/admin/events/:eventId', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+	if (ev.status !== 'draft') return c.json({ error: 'Only draft events can be deleted' }, 409);
+
+	const cnt = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM sessions WHERE event_id = ?`).bind(eventId).first<{ cnt: number }>();
+	if (cnt && cnt.cnt > 0) return c.json({ error: 'Cannot delete event with existing sessions' }, 409);
+
+	await c.env.DB.batch([
+		c.env.DB.prepare(`DELETE FROM scenes WHERE event_id = ?`).bind(eventId),
+		c.env.DB.prepare(`DELETE FROM event_admins WHERE event_id = ?`).bind(eventId),
+		c.env.DB.prepare(`DELETE FROM events WHERE id = ?`).bind(eventId),
+	]);
+
+	await invalidateEventCache(c.env, eventId);
+	return c.json({ ok: true });
+});
+
+/** Clone an event with all its scenes. */
+app.post('/api/admin/events/:eventId/clone', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+
+	const scenes = await loadAllScenes(c.env, eventId);
+
+	// Generate a unique slug
+	let newSlug = `${ev.id}-copy`;
+	let attempt = 0;
+	while (true) {
+		const slug = attempt === 0 ? newSlug : `${ev.id}-copy-${attempt}`;
+		const existing = await c.env.DB.prepare(`SELECT id FROM events WHERE id = ?`).bind(slug).first();
+		if (!existing) {
+			newSlug = slug;
+			break;
+		}
+		attempt++;
+		if (attempt > 20) return c.json({ error: 'Could not generate unique slug' }, 500);
+	}
+
+	// Insert cloned event — null out watermarks (don't copy R2 objects)
+	await c.env.DB.prepare(
+		`INSERT INTO events (id, name, status, accent_color,
+			tagline, kiosk_idle_subhead, scene_picker_heading,
+			scene_style_preamble, scene_constraints,
+			timezone, privacy_email)
+		 VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`,
+	)
+		.bind(
+			newSlug,
+			`${ev.name} (Copy)`,
+			ev.accent_color,
+			ev.tagline,
+			ev.kiosk_idle_subhead,
+			ev.scene_picker_heading,
+			ev.scene_style_preamble,
+			ev.scene_constraints,
+			ev.timezone,
+			ev.privacy_email,
+		)
+		.run();
+
+	// Clone scenes
+	if (scenes.length > 0) {
+		const stmts = scenes.map((s) =>
+			c.env.DB.prepare(
+				`INSERT INTO scenes (event_id, id, name, emoji, description, prompt, sort_order, is_active)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			).bind(newSlug, s.id, s.name, s.emoji, s.description, s.prompt, s.sort_order, s.is_active),
+		);
+		await c.env.DB.batch(stmts);
+	}
+
+	return c.json({ ok: true, newEventId: newSlug });
+});
+
+/** Upload watermark PNG to R2. */
+app.post('/api/admin/events/:eventId/watermark', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+
+	let form: FormData;
+	try {
+		form = await c.req.formData();
+	} catch {
+		return c.json({ error: 'Expected multipart/form-data' }, 400);
+	}
+
+	const file = form.get('file');
+	if (!file || !(file instanceof File)) return c.json({ error: 'No file uploaded' }, 400);
+	if (file.size > 2 * 1024 * 1024) return c.json({ error: 'File too large (max 2 MB)' }, 400);
+	if (!file.type.includes('png')) return c.json({ error: 'Only PNG files are accepted' }, 400);
+
+	const r2Key = `events/${eventId}/watermark.png`;
+	const bytes = await file.arrayBuffer();
+	await c.env.BUCKET.put(r2Key, bytes, { httpMetadata: { contentType: 'image/png' } });
+
+	await c.env.DB.prepare(`UPDATE events SET watermark_image_key = ? WHERE id = ?`).bind(r2Key, eventId).run();
+	await invalidateEventCache(c.env, eventId);
+
+	return c.json({ ok: true, key: r2Key });
+});
+
+/** Remove watermark from R2 + DB. */
+app.delete('/api/admin/events/:eventId/watermark', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+
+	if (ev.watermark_image_key) {
+		await c.env.BUCKET.delete(ev.watermark_image_key);
+	}
+	await c.env.DB.prepare(`UPDATE events SET watermark_image_key = NULL WHERE id = ?`).bind(eventId).run();
+	await invalidateEventCache(c.env, eventId);
+
+	return c.json({ ok: true });
+});
+
+/** Upload left watermark PNG to R2. */
+app.post('/api/admin/events/:eventId/watermark-left', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+
+	let form: FormData;
+	try {
+		form = await c.req.formData();
+	} catch {
+		return c.json({ error: 'Expected multipart/form-data' }, 400);
+	}
+
+	const file = form.get('file');
+	if (!file || !(file instanceof File)) return c.json({ error: 'No file uploaded' }, 400);
+	if (file.size > 2 * 1024 * 1024) return c.json({ error: 'File too large (max 2 MB)' }, 400);
+	if (!file.type.includes('png')) return c.json({ error: 'Only PNG files are accepted' }, 400);
+
+	const r2Key = `events/${eventId}/watermark-left.png`;
+	const bytes = await file.arrayBuffer();
+	await c.env.BUCKET.put(r2Key, bytes, { httpMetadata: { contentType: 'image/png' } });
+
+	await c.env.DB.prepare(`UPDATE events SET watermark_image_key_left = ? WHERE id = ?`).bind(r2Key, eventId).run();
+	await invalidateEventCache(c.env, eventId);
+
+	return c.json({ ok: true, key: r2Key });
+});
+
+/** Remove left watermark from R2 + DB. */
+app.delete('/api/admin/events/:eventId/watermark-left', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+
+	if (ev.watermark_image_key_left) {
+		await c.env.BUCKET.delete(ev.watermark_image_key_left);
+	}
+	await c.env.DB.prepare(`UPDATE events SET watermark_image_key_left = NULL WHERE id = ?`).bind(eventId).run();
+	await invalidateEventCache(c.env, eventId);
+
+	return c.json({ ok: true });
+});
+
+/** Create a scene. */
+app.post('/api/admin/events/:eventId/scenes', async (c) => {
+	const eventId = c.req.param('eventId');
+	const ev = await loadEvent(c.env, eventId);
+	if (!ev) return c.json({ error: 'Event not found' }, 404);
+
+	const body = await c.req.json<{
+		id: string;
+		name: string;
+		emoji: string;
+		description: string;
+		prompt: string;
+		sort_order: number;
+		is_active: number;
+	}>();
+
+	if (!body.id || !body.name) return c.json({ error: 'id and name are required' }, 400);
+
+	try {
+		await c.env.DB.prepare(
+			`INSERT INTO scenes (event_id, id, name, emoji, description, prompt, sort_order, is_active)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+			.bind(
+				eventId,
+				body.id,
+				body.name,
+				body.emoji || '',
+				body.description || '',
+				body.prompt || '',
+				body.sort_order ?? 0,
+				body.is_active ?? 1,
+			)
+			.run();
+	} catch (err: any) {
+		if (err?.message?.includes('UNIQUE constraint')) {
+			return c.json({ error: 'A scene with this ID already exists for this event' }, 409);
+		}
+		throw err;
+	}
+
+	await invalidateEventCache(c.env, eventId);
+	return c.json({ ok: true, id: body.id });
+});
+
+/** Bulk reorder scenes. Expects [{id, sort_order}, ...]. */
+app.put('/api/admin/events/:eventId/scenes/reorder', async (c) => {
+	const eventId = c.req.param('eventId');
+	const body = await c.req.json<{ id: string; sort_order: number }[]>();
+
+	if (!Array.isArray(body) || body.length === 0) return c.json({ error: 'Expected array' }, 400);
+
+	const stmts = body.map((item) =>
+		c.env.DB.prepare(`UPDATE scenes SET sort_order = ? WHERE event_id = ? AND id = ?`).bind(item.sort_order, eventId, item.id),
+	);
+	await c.env.DB.batch(stmts);
+
+	await invalidateEventCache(c.env, eventId);
+	return c.json({ ok: true });
+});
+
+/** Update a scene. Supports partial updates. */
+app.put('/api/admin/events/:eventId/scenes/:sceneId', async (c) => {
+	const eventId = c.req.param('eventId');
+	const sceneId = c.req.param('sceneId');
+	const body = await c.req.json<Record<string, any>>();
+
+	const ALLOWED = new Set(['name', 'emoji', 'description', 'prompt', 'sort_order', 'is_active']);
+	const sets: string[] = [];
+	const vals: any[] = [];
+	for (const [key, val] of Object.entries(body)) {
+		if (!ALLOWED.has(key)) continue;
+		sets.push(`${key} = ?`);
+		vals.push(val);
+	}
+
+	if (sets.length === 0) return c.json({ error: 'No valid fields' }, 400);
+
+	vals.push(eventId, sceneId);
+	await c.env.DB.prepare(`UPDATE scenes SET ${sets.join(', ')} WHERE event_id = ? AND id = ?`)
+		.bind(...vals)
+		.run();
+
+	await invalidateEventCache(c.env, eventId);
+	return c.json({ ok: true });
+});
+
+/** Delete a scene. */
+app.delete('/api/admin/events/:eventId/scenes/:sceneId', async (c) => {
+	const eventId = c.req.param('eventId');
+	const sceneId = c.req.param('sceneId');
+
+	await c.env.DB.prepare(`DELETE FROM scenes WHERE event_id = ? AND id = ?`).bind(eventId, sceneId).run();
+
+	await invalidateEventCache(c.env, eventId);
+	return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -1419,19 +2529,16 @@ app.delete("/api/admin/session/:id", async (c) => {
  * and pass them along to the scene picker (6.3) and workflow trigger (6.4).
  * POST /api/kiosk/selfie  (multipart: selfie=file)
  */
-eventApp.post("/api/kiosk/selfie", async (c) => {
+eventApp.post('/api/kiosk/selfie', async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
 	} catch (err) {
-		return c.json(
-			{ error: "expected multipart/form-data with 'selfie'", details: String(err) },
-			400,
-		);
+		return c.json({ error: "expected multipart/form-data with 'selfie'", details: String(err) }, 400);
 	}
-	const selfie = inForm.get("selfie");
+	const selfie = inForm.get('selfie');
 	if (!(selfie instanceof File) || selfie.size === 0) {
-		return c.json({ error: "missing selfie file" }, 400);
+		return c.json({ error: 'missing selfie file' }, 400);
 	}
 
 	const sessionId = crypto.randomUUID();
@@ -1440,22 +2547,22 @@ eventApp.post("/api/kiosk/selfie", async (c) => {
 
 	const buf = await selfie.arrayBuffer();
 	await c.env.BUCKET.put(selfieKey, buf, {
-		httpMetadata: { contentType: selfie.type || "image/jpeg" },
+		httpMetadata: { contentType: selfie.type || 'image/jpeg' },
 		customMetadata: {
 			sessionId,
-			source: "kiosk",
+			source: 'kiosk',
 			capturedAt: new Date().toISOString(),
 		},
 	});
 
-	trackEvent(c.env.ANALYTICS, "session.created", sessionId);
+	trackEvent(c.env.ANALYTICS, 'session.created', sessionId);
 
 	return c.json({
 		ok: true,
 		sessionId,
 		selfieKey,
 		size: buf.byteLength,
-		contentType: selfie.type || "image/jpeg",
+		contentType: selfie.type || 'image/jpeg',
 	});
 });
 
@@ -1474,46 +2581,37 @@ eventApp.post("/api/kiosk/selfie", async (c) => {
  * Body: { sessionId, selfieKey, sceneId }
  * Response: { ok, instanceId, sessionId, statusUrl }
  */
-eventApp.post("/api/kiosk/start", async (c) => {
+eventApp.post('/api/kiosk/start', async (c) => {
 	let body: { sessionId?: unknown; selfieKey?: unknown; sceneId?: unknown };
 	try {
 		body = await c.req.json();
 	} catch (err) {
-		return c.json(
-			{ error: "expected JSON body { sessionId, selfieKey, sceneId }", details: String(err) },
-			400,
-		);
+		return c.json({ error: 'expected JSON body { sessionId, selfieKey, sceneId }', details: String(err) }, 400);
 	}
 
-	const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
-	const selfieKey = typeof body.selfieKey === "string" ? body.selfieKey : "";
-	const sceneId = typeof body.sceneId === "string" ? body.sceneId : "";
+	const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
+	const selfieKey = typeof body.selfieKey === 'string' ? body.selfieKey : '';
+	const sceneId = typeof body.sceneId === 'string' ? body.sceneId : '';
 
 	if (!UUID_RE.test(sessionId)) {
-		return c.json({ error: "invalid sessionId" }, 400);
+		return c.json({ error: 'invalid sessionId' }, 400);
 	}
 	// Lock the selfieKey shape down so a client can't point the workflow
 	// at an arbitrary R2 object (e.g. workflow-test/<other>/selfie.jpg).
 	const expectedPrefix = `kiosk/${sessionId}/`;
 	if (!selfieKey.startsWith(expectedPrefix)) {
-		return c.json(
-			{ error: `selfieKey must start with ${expectedPrefix}`, got: selfieKey },
-			400,
-		);
+		return c.json({ error: `selfieKey must start with ${expectedPrefix}`, got: selfieKey }, 400);
 	}
 	if (!sceneId) {
-		return c.json({ error: "missing sceneId" }, 400);
+		return c.json({ error: 'missing sceneId' }, 400);
 	}
 
 	// Load the event context so we can (a) validate sceneId against the
 	// event's actual scenes, not the bundled JSON, and (b) tag the new
 	// workflow run with eventId for D1 inserts downstream.
-	const eventCtx = c.get("eventCtx");
+	const eventCtx = c.get('eventCtx');
 	if (!eventCtx.scenes.some((s) => s.id === sceneId)) {
-		return c.json(
-			{ error: `unknown sceneId: ${sceneId} for event ${eventCtx.event.id}` },
-			400,
-		);
+		return c.json({ error: `unknown sceneId: ${sceneId} for event ${eventCtx.event.id}` }, 400);
 	}
 
 	// Validate the selfie actually exists in R2. head() is cheap and
@@ -1523,7 +2621,7 @@ eventApp.post("/api/kiosk/start", async (c) => {
 		return c.json({ error: `selfie not found in R2: ${selfieKey}` }, 404);
 	}
 
-	const basePath = c.get("basePath");
+	const basePath = c.get('basePath');
 	const publicOrigin = new URL(c.req.url).origin;
 	const instance = await c.env.CARICATURE_WORKFLOW.create({
 		params: {
@@ -1532,7 +2630,7 @@ eventApp.post("/api/kiosk/start", async (c) => {
 			selfieKey,
 			sceneId,
 			publicOrigin,
-			note: "kiosk",
+			note: 'kiosk',
 		},
 	});
 
@@ -1557,23 +2655,21 @@ eventApp.post("/api/kiosk/start", async (c) => {
  *
  * POST /api/kiosk/print  body: { sessionId }
  */
-eventApp.post("/api/kiosk/print", async (c) => {
+eventApp.post('/api/kiosk/print', async (c) => {
 	let body: { sessionId?: unknown };
 	try {
 		body = await c.req.json();
 	} catch (err) {
-		return c.json({ error: "expected JSON body { sessionId }", details: String(err) }, 400);
+		return c.json({ error: 'expected JSON body { sessionId }', details: String(err) }, 400);
 	}
 
-	const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+	const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
 	if (!UUID_RE.test(sessionId)) {
-		return c.json({ error: "invalid sessionId" }, 400);
+		return c.json({ error: 'invalid sessionId' }, 400);
 	}
 
 	// The session must be completed and have a postcard before we can print.
-	const session = await c.env.DB.prepare(
-		"SELECT id, event_id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
-	)
+	const session = await c.env.DB.prepare('SELECT id, event_id, status, postcard_key, scene_name FROM sessions WHERE id = ?')
 		.bind(sessionId)
 		.first<{
 			id: string;
@@ -1584,13 +2680,10 @@ eventApp.post("/api/kiosk/print", async (c) => {
 		}>();
 
 	if (!session) {
-		return c.json({ error: "session not found" }, 404);
+		return c.json({ error: 'session not found' }, 404);
 	}
-	if (session.status !== "completed" || !session.postcard_key) {
-		return c.json(
-			{ error: "session is not ready to print", status: session.status },
-			409,
-		);
+	if (session.status !== 'completed' || !session.postcard_key) {
+		return c.json({ error: 'session is not ready to print', status: session.status }, 409);
 	}
 
 	// Idempotency: if there's an active or completed print job already, don't
@@ -1605,9 +2698,7 @@ eventApp.post("/api/kiosk/print", async (c) => {
 		.first<{ id: string; status: string }>();
 
 	if (existing) {
-		console.log(
-			`[kiosk-print] session=${sessionId} already queued jobId=${existing.id} status=${existing.status}`,
-		);
+		console.log(`[kiosk-print] session=${sessionId} already queued jobId=${existing.id} status=${existing.status}`);
 		return c.json({
 			ok: true,
 			alreadyQueued: true,
@@ -1618,7 +2709,7 @@ eventApp.post("/api/kiosk/print", async (c) => {
 
 	const origin = new URL(c.req.url).origin;
 	const postcardUrl = `${origin}/p/${sessionId}`;
-	const sceneName = session.scene_name ?? "Scene";
+	const sceneName = session.scene_name ?? 'Scene';
 
 	const insertResult = await c.env.DB.prepare(
 		`INSERT INTO print_jobs (session_id, event_id, postcard_key, postcard_url, scene_name)
@@ -1629,20 +2720,18 @@ eventApp.post("/api/kiosk/print", async (c) => {
 		.first<{ id: string }>();
 
 	if (!insertResult) {
-		return c.json({ error: "failed to enqueue print job" }, 500);
+		return c.json({ error: 'failed to enqueue print job' }, 500);
 	}
 
-	console.log(
-		`[kiosk-print] session=${sessionId} jobId=${insertResult.id} queued sceneName=${sceneName}`,
-	);
+	console.log(`[kiosk-print] session=${sessionId} jobId=${insertResult.id} queued sceneName=${sceneName}`);
 
-	trackEvent(c.env.ANALYTICS, "print.requested", sessionId, sceneName);
+	trackEvent(c.env.ANALYTICS, 'print.requested', sessionId, sceneName);
 
 	return c.json({
 		ok: true,
 		alreadyQueued: false,
 		jobId: insertResult.id,
-		status: "pending",
+		status: 'pending',
 	});
 });
 
@@ -1654,17 +2743,15 @@ eventApp.post("/api/kiosk/print", async (c) => {
  * GET /api/kiosk/print/:jobId/status
  * → { status: "pending" | "printing" | "printed" | "failed", printedAt?, errorMsg? }
  */
-eventApp.get("/api/kiosk/print/:jobId/status", async (c) => {
-	const jobId = c.req.param("jobId");
-	if (!jobId) return c.json({ error: "missing jobId" }, 400);
+eventApp.get('/api/kiosk/print/:jobId/status', async (c) => {
+	const jobId = c.req.param('jobId');
+	if (!jobId) return c.json({ error: 'missing jobId' }, 400);
 
-	const row = await c.env.DB.prepare(
-		"SELECT status, printed_at, error_msg FROM print_jobs WHERE id = ?",
-	)
+	const row = await c.env.DB.prepare('SELECT status, printed_at, error_msg FROM print_jobs WHERE id = ?')
 		.bind(jobId)
 		.first<{ status: string; printed_at: number | null; error_msg: string | null }>();
 
-	if (!row) return c.json({ error: "job not found" }, 404);
+	if (!row) return c.json({ error: 'job not found' }, 404);
 
 	return c.json({
 		status: row.status,
@@ -1683,30 +2770,30 @@ eventApp.get("/api/kiosk/print/:jobId/status", async (c) => {
  *
  * GET /api/kiosk/qr?url=<encoded>
  */
-eventApp.get("/api/kiosk/qr", (c) => {
-	const raw = c.req.query("url");
-	if (!raw) return c.json({ error: "missing url param" }, 400);
+eventApp.get('/api/kiosk/qr', (c) => {
+	const raw = c.req.query('url');
+	if (!raw) return c.json({ error: 'missing url param' }, 400);
 
 	let target: string;
 	try {
 		target = decodeURIComponent(raw);
 	} catch {
-		return c.json({ error: "invalid url encoding" }, 400);
+		return c.json({ error: 'invalid url encoding' }, 400);
 	}
 
 	// Only allow URLs that start with our own origin so this isn't an
 	// open proxy for arbitrary QR codes.
 	const workerOrigin = new URL(c.req.url).origin;
-	if (!target.startsWith(workerOrigin + "/") && target !== workerOrigin) {
-		return c.json({ error: "url must be on this origin" }, 403);
+	if (!target.startsWith(workerOrigin + '/') && target !== workerOrigin) {
+		return c.json({ error: 'url must be on this origin' }, 403);
 	}
 
 	const png = qrPng(target, 400);
 	return new Response(png, {
 		headers: {
-			"content-type": "image/png",
+			'content-type': 'image/png',
 			// QR contents are deterministic; cache aggressively on CDN.
-			"cache-control": "public, max-age=31536000, immutable",
+			'cache-control': 'public, max-age=31536000, immutable',
 		},
 	});
 });
@@ -1718,9 +2805,9 @@ eventApp.get("/api/kiosk/qr", (c) => {
  * TODO(legal): Have James send this copy to legal for review before NY Tech Week.
  * GET /privacy
  */
-eventApp.get("/privacy", async (c) => {
-	const { event } = c.get("eventCtx");
-	const basePath = c.get("basePath");
+eventApp.get('/privacy', async (c) => {
+	const { event } = c.get('eventCtx');
+	const basePath = c.get('basePath');
 	return c.html(
 		page(
 			`Privacy — ${event.name} Caricature Booth`,
@@ -1812,9 +2899,9 @@ eventApp.get("/privacy", async (c) => {
  * the booth. Big visual, one obvious action.
  * GET /kiosk
  */
-eventApp.get("/kiosk", async (c) => {
-	const { event } = c.get("eventCtx");
-	const basePath = c.get("basePath");
+eventApp.get('/kiosk', async (c) => {
+	const { event } = c.get('eventCtx');
+	const basePath = c.get('basePath');
 	return c.html(
 		kioskPage(
 			`${event.name} — Tap to start`,
@@ -1853,11 +2940,11 @@ eventApp.get("/kiosk", async (c) => {
  * { sessionId, selfieKey } in sessionStorage, navigates to /kiosk/scene.
  * GET /kiosk/capture
  */
-eventApp.get("/kiosk/capture", (c) => {
-	const basePath = c.get("basePath");
+eventApp.get('/kiosk/capture', (c) => {
+	const basePath = c.get('basePath');
 	return c.html(
 		kioskPage(
-			"Capture your selfie",
+			'Capture your selfie',
 			`<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
 					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
@@ -2112,17 +3199,17 @@ eventApp.get("/kiosk/capture", (c) => {
  * — no client fetch round trip on the iPad.
  * GET /kiosk/scene
  */
-eventApp.get("/kiosk/scene", async (c) => {
-	const eventCtx = c.get("eventCtx");
-	const basePath = c.get("basePath");
+eventApp.get('/kiosk/scene', async (c) => {
+	const eventCtx = c.get('eventCtx');
+	const basePath = c.get('basePath');
 	let scenes: Scene[];
 	try {
 		scenes = eventCtx.scenes;
 	} catch (err) {
-		console.error("loadScenes failed:", err);
+		console.error('loadScenes failed:', err);
 		return c.html(
 			kioskPage(
-				"Pick a scene",
+				'Pick a scene',
 				`<main class="min-h-[100dvh] w-full flex flex-col items-center justify-center px-8 text-center">
 					<div class="text-2xl font-semibold text-red-300">Scenes unavailable</div>
 					<p class="mt-3 text-sm text-white/60 max-w-md">${String(err)}</p>
@@ -2137,8 +3224,8 @@ eventApp.get("/kiosk/scene", async (c) => {
 		.map(
 			(s, idx) => `<button type="button"
 				data-scene-id="${s.id}"
-				data-scene-name="${s.name.replace(/"/g, "&quot;")}"
-				data-scene-emoji="${s.emoji.replace(/"/g, "&quot;")}"
+				data-scene-name="${s.name.replace(/"/g, '&quot;')}"
+				data-scene-emoji="${s.emoji.replace(/"/g, '&quot;')}"
 				class="scene-card group relative flex flex-col items-start text-left rounded-3xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/30 active:scale-[0.98] transition p-4 sm:p-5 focus:outline-none focus-visible:ring-2 focus-visible:ring-cf-orange disabled:opacity-50 disabled:cursor-not-allowed"
 				style="animation-delay: ${idx * 40}ms;">
 				<div class="text-4xl sm:text-5xl leading-none mb-2 sm:mb-3" aria-hidden="true">${s.emoji}</div>
@@ -2146,11 +3233,11 @@ eventApp.get("/kiosk/scene", async (c) => {
 				<div class="mt-1 text-xs sm:text-sm text-white/60 leading-snug line-clamp-2">${s.description}</div>
 			</button>`,
 		)
-		.join("\n");
+		.join('\n');
 
 	return c.html(
 		kioskPage(
-			"Pick a scene",
+			'Pick a scene',
 			`<main id="scene-root" class="min-h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
 					<a href="${basePath}/kiosk/capture" class="text-sm text-white/50 hover:text-white">← Retake selfie</a>
@@ -2249,12 +3336,12 @@ eventApp.get("/kiosk/scene", async (c) => {
  * page back-button doesn't accidentally re-trigger the workflow.
  * GET /kiosk/review
  */
-eventApp.get("/kiosk/review", async (c) => {
-	const { event } = c.get("eventCtx");
-	const basePath = c.get("basePath");
+eventApp.get('/kiosk/review', async (c) => {
+	const { event } = c.get('eventCtx');
+	const basePath = c.get('basePath');
 	return c.html(
 		kioskPage(
-			"Review your postcard",
+			'Review your postcard',
 			`<main class="min-h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
 					<a href="${basePath}/kiosk/scene" class="text-sm text-white/50 hover:text-white">← Pick different scene</a>
@@ -2285,7 +3372,7 @@ eventApp.get("/kiosk/review", async (c) => {
 						<div class="flex flex-col items-center gap-2">
 							<div class="text-xs uppercase tracking-[0.2em] text-white/40">Your scene</div>
 							<div class="aspect-[3/4] w-full max-w-[260px] rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5 flex flex-col items-center justify-center text-center">
-								<div id="rev-scene-emoji" class="text-6xl sm:text-7xl leading-none" aria-hidden="true">${event.empty_state_emoji}</div>
+								<div id="rev-scene-emoji" class="text-6xl sm:text-7xl leading-none" aria-hidden="true">🎨</div>
 								<div id="rev-scene-name" class="mt-3 text-base sm:text-lg font-semibold leading-tight">Loading…</div>
 							</div>
 						</div>
@@ -2388,21 +3475,20 @@ eventApp.get("/kiosk/review", async (c) => {
  *
  * GET /kiosk/status/:instanceId?session=<sid>
  */
-eventApp.get("/kiosk/status/:instanceId", async (c) => {
-	const { event } = c.get("eventCtx");
-	const basePath = c.get("basePath");
-	const instanceId = c.req.param("instanceId");
+eventApp.get('/kiosk/status/:instanceId', async (c) => {
+	const { event } = c.get('eventCtx');
+	const basePath = c.get('basePath');
+	const instanceId = c.req.param('instanceId');
 	if (!UUID_RE.test(instanceId)) return c.notFound();
-	const sessionFromQs = c.req.query("session");
-	const sessionId =
-		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
+	const sessionFromQs = c.req.query('session');
+	const sessionId = sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
 
 	// Without a sessionId we have nothing to subscribe to. Show a polite
 	// error instead of a broken stepper.
 	if (!sessionId) {
 		return c.html(
 			kioskPage(
-				"Missing session",
+				'Missing session',
 				`<main class="min-h-[100dvh] w-full flex flex-col items-center justify-center px-8 text-center gap-6">
 					<div class="text-2xl font-semibold text-red-300">Missing session id</div>
 					<p class="text-sm text-white/60 max-w-md">This page can't track a postcard without ?session=&lt;id&gt;.</p>
@@ -2415,7 +3501,7 @@ eventApp.get("/kiosk/status/:instanceId", async (c) => {
 
 	return c.html(
 		kioskPage(
-			"Making your postcard",
+			'Making your postcard',
 			`<main id="status-root" class="min-h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-end">
 					<div id="status-conn" class="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-white/30">
@@ -2439,21 +3525,23 @@ eventApp.get("/kiosk/status/:instanceId", async (c) => {
 					-->
 					<ol id="status-steps" class="w-full max-w-md flex flex-col gap-3 sm:gap-4">
 						${[
-							{ key: "check", label: "Checking your photo" },
-							{ key: "paint", label: "Painting your caricature" },
-							{ key: "frame", label: "Adding the postcard frame" },
-							{ key: "ready", label: "Your postcard is ready" },
+							{ key: 'check', label: 'Checking your photo' },
+							{ key: 'paint', label: 'Painting your caricature' },
+							{ key: 'frame', label: 'Adding the postcard frame' },
+							{ key: 'ready', label: 'Your postcard is ready' },
 						]
 							.map(
-								(s) => `<li data-step="${s.key}" class="flex items-start gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 sm:px-5 sm:py-4 transition">
+								(
+									s,
+								) => `<li data-step="${s.key}" class="flex items-start gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 sm:px-5 sm:py-4 transition">
 									<span class="step-marker shrink-0 mt-0.5 size-7 rounded-full border border-white/15 flex items-center justify-center text-xs text-white/40">·</span>
 									<div class="min-w-0 flex-1">
 										<div class="step-label text-base sm:text-lg font-semibold leading-tight text-white/50">${s.label}</div>
-										${s.hint ? `<div class="step-hint mt-1 text-xs text-white/40 hidden">${s.hint}</div>` : ""}
+										${s.hint ? `<div class="step-hint mt-1 text-xs text-white/40 hidden">${s.hint}</div>` : ''}
 									</div>
 								</li>`,
 							)
-							.join("\n")}
+							.join('\n')}
 					</ol>
 				</section>
 
@@ -2710,33 +3798,30 @@ eventApp.get("/kiosk/status/:instanceId", async (c) => {
  *
  * GET /kiosk/done?session=<sid>
  */
-eventApp.get("/kiosk/done", (c) => {
-	const basePath = c.get("basePath");
-	const sessionFromQs = c.req.query("session");
-	const sessionId =
-		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
+eventApp.get('/kiosk/done', (c) => {
+	const basePath = c.get('basePath');
+	const sessionFromQs = c.req.query('session');
+	const sessionId = sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
 
 	// Build the QR src at render time so the <img> tag is ready on first
 	// paint. We construct the pickup URL using the same origin as this
 	// request — same logic the workflow uses for postcardUrl.
-	const pickupUrl = sessionId
-		? `${new URL(c.req.url).origin}${basePath}/p/${sessionId}`
-		: null;
-	const qrSrc = pickupUrl
-		? `${basePath}/api/kiosk/qr?url=${encodeURIComponent(pickupUrl)}`
-		: null;
+	const pickupUrl = sessionId ? `${new URL(c.req.url).origin}${basePath}/p/${sessionId}` : null;
+	const qrSrc = pickupUrl ? `${basePath}/api/kiosk/qr?url=${encodeURIComponent(pickupUrl)}` : null;
 
 	return c.html(
 		kioskPage(
-			"Your postcard is ready",
+			'Your postcard is ready',
 			`<main id="done-root" class="min-h-[100dvh] w-full flex flex-col" style="touch-action:manipulation;">
 				<header class="shrink-0 px-6 pt-4 sm:pt-6 pb-2 flex items-center justify-end">
 					<!-- QR code top-right — always visible for scanning -->
 					<div class="flex flex-col items-center gap-1">
-						${qrSrc
-							? `<img src="${qrSrc}" alt="QR code for digital copy"
+						${
+							qrSrc
+								? `<img src="${qrSrc}" alt="QR code for digital copy"
 									class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />`
-							: `<div class="w-20 sm:w-24 aspect-square rounded-xl border border-white/10 bg-white/5"></div>`}
+								: `<div class="w-20 sm:w-24 aspect-square rounded-xl border border-white/10 bg-white/5"></div>`
+						}
 						<p class="text-[10px] uppercase tracking-[0.18em] text-white/40">Scan for digital copy</p>
 					</div>
 				</header>
@@ -3037,27 +4122,29 @@ eventApp.get("/kiosk/done", (c) => {
  * Client-side JS polls `/api/gallery/feed` every 30s and diffs by sessionId
  * to avoid full re-renders.
  */
-eventApp.get("/gallery", async (c) => {
-	const { event } = c.get("eventCtx");
-	const basePath = c.get("basePath");
+eventApp.get('/gallery', async (c) => {
+	const { event } = c.get('eventCtx');
+	const basePath = c.get('basePath');
 	const { results } = await c.env.DB.prepare(
 		`SELECT id, scene_name, postcard_key, completed_at
 		 FROM sessions
 		 WHERE event_id = ? AND status = 'completed' AND postcard_key IS NOT NULL
 		 ORDER BY completed_at DESC
 		 LIMIT 8`,
-	).bind(event.id).all<{
-		id: string;
-		scene_name: string | null;
-		postcard_key: string;
-		completed_at: number | null;
-	}>();
+	)
+		.bind(event.id)
+		.all<{
+			id: string;
+			scene_name: string | null;
+			postcard_key: string;
+			completed_at: number | null;
+		}>();
 
 	const now = Math.floor(Date.now() / 1000);
 	const formatAge = (completedAt: number | null): string => {
-		if (!completedAt) return "just now";
+		if (!completedAt) return 'just now';
 		const diff = Math.max(0, now - completedAt);
-		if (diff < 60) return "just now";
+		if (diff < 60) return 'just now';
 		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
 		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
 		return `${Math.floor(diff / 86400)}d ago`;
@@ -3065,7 +4152,7 @@ eventApp.get("/gallery", async (c) => {
 
 	const cards = results
 		.map((row) => {
-			const sceneName = row.scene_name ?? "Untitled scene";
+			const sceneName = row.scene_name ?? 'Untitled scene';
 			const age = formatAge(row.completed_at);
 			const imgUrl = `/api/run-img?key=${encodeURIComponent(row.postcard_key)}`;
 			return `<article class="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 shadow-[0_0_24px_rgba(0,0,0,0.4)]">
@@ -3078,10 +4165,10 @@ eventApp.get("/gallery", async (c) => {
 				</div>
 			</article>`;
 		})
-		.join("");
+		.join('');
 
 	const empty = `<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.02] py-24 text-center">
-		<div class="text-5xl">${event.empty_state_emoji}</div>
+		<div class="text-5xl">🎨</div>
 		<p class="mt-4 text-lg text-white/70">No postcards yet — be the first!</p>
 		<p class="mt-1 text-sm text-white/40">Walk over to the iPad to get started.</p>
 	</div>`;
@@ -3151,7 +4238,7 @@ eventApp.get("/gallery", async (c) => {
 
 				function buildEmpty() {
 					return '<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/[0.02] py-24 text-center">'
-						+ '<div class="text-5xl">${event.empty_state_emoji}</div>'
+						+ '<div class="text-5xl">🎨</div>'
 						+ '<p class="mt-4 text-lg text-white/70">No postcards yet — be the first!</p>'
 						+ '<p class="mt-1 text-sm text-white/40">Walk over to the iPad to get started.</p>'
 						+ '</div>';
@@ -3193,21 +4280,23 @@ eventApp.get("/gallery", async (c) => {
  * polling loop. Shape: { sessions: [{ sessionId, sceneId, sceneName,
  * postcardKey, completedAt }] }.
  */
-eventApp.get("/api/gallery/feed", async (c) => {
-	const { event } = c.get("eventCtx");
+eventApp.get('/api/gallery/feed', async (c) => {
+	const { event } = c.get('eventCtx');
 	const { results } = await c.env.DB.prepare(
 		`SELECT id, scene_id, scene_name, postcard_key, completed_at
 		 FROM sessions
 		 WHERE event_id = ? AND status = 'completed' AND postcard_key IS NOT NULL
 		 ORDER BY completed_at DESC
 		 LIMIT 8`,
-	).bind(event.id).all<{
-		id: string;
-		scene_id: string | null;
-		scene_name: string | null;
-		postcard_key: string;
-		completed_at: number | null;
-	}>();
+	)
+		.bind(event.id)
+		.all<{
+			id: string;
+			scene_id: string | null;
+			scene_name: string | null;
+			postcard_key: string;
+			completed_at: number | null;
+		}>();
 
 	return c.json({
 		sessions: results.map((r) => ({
@@ -3230,13 +4319,13 @@ eventApp.get("/api/gallery/feed", async (c) => {
  *
  * eventId is required — each print agent is scoped to one event.
  */
-app.get("/api/print-agent/jobs", async (c) => {
-	const eventId = c.req.query("eventId");
+app.get('/api/print-agent/jobs', async (c) => {
+	const eventId = c.req.query('eventId');
 	if (!eventId) {
-		return c.json({ error: "eventId query param is required" }, 400);
+		return c.json({ error: 'eventId query param is required' }, 400);
 	}
 
-	const limit = Math.min(Number(c.req.query("limit")) || 5, 20);
+	const limit = Math.min(Number(c.req.query('limit')) || 5, 20);
 	const { results } = await c.env.DB.prepare(
 		`SELECT id, session_id, event_id, postcard_key, postcard_url, scene_name, created_at
 		 FROM print_jobs
@@ -3263,11 +4352,11 @@ app.get("/api/print-agent/jobs", async (c) => {
  * POST /api/print-agent/jobs/:id/ack
  * Body: { "status": "printed" } or { "status": "failed", "error": "reason" }
  */
-app.post("/api/print-agent/jobs/:id/ack", async (c) => {
-	const jobId = c.req.param("id");
-	const body = await c.req.json<{ status: "printed" | "failed"; error?: string }>();
+app.post('/api/print-agent/jobs/:id/ack', async (c) => {
+	const jobId = c.req.param('id');
+	const body = await c.req.json<{ status: 'printed' | 'failed'; error?: string }>();
 
-	if (body.status !== "printed" && body.status !== "failed") {
+	if (body.status !== 'printed' && body.status !== 'failed') {
 		return c.json({ error: "status must be 'printed' or 'failed'" }, 400);
 	}
 
@@ -3280,20 +4369,13 @@ app.post("/api/print-agent/jobs/:id/ack", async (c) => {
 		.run();
 
 	if ((result.meta.changes ?? 0) === 0) {
-		return c.json({ error: "job not found or already acked" }, 404);
+		return c.json({ error: 'job not found or already acked' }, 404);
 	}
 
 	// Track print completion/failure. Fetch the session_id for the event.
-	const job = await c.env.DB.prepare("SELECT session_id FROM print_jobs WHERE id = ?")
-		.bind(jobId)
-		.first<{ session_id: string }>();
-	const sid = job?.session_id ?? "";
-	trackEvent(
-		c.env.ANALYTICS,
-		body.status === "printed" ? "print.completed" : "print.failed",
-		sid,
-		body.error ?? "",
-	);
+	const job = await c.env.DB.prepare('SELECT session_id FROM print_jobs WHERE id = ?').bind(jobId).first<{ session_id: string }>();
+	const sid = job?.session_id ?? '';
+	trackEvent(c.env.ANALYTICS, body.status === 'printed' ? 'print.completed' : 'print.failed', sid, body.error ?? '');
 
 	return c.json({ ok: true, jobId, status: body.status });
 });
@@ -3302,8 +4384,8 @@ app.post("/api/print-agent/jobs/:id/ack", async (c) => {
  * Triggers a new instance of the (bare) caricature workflow.
  * GET /api/test-workflow?note=...
  */
-app.get("/api/test-workflow", async (c) => {
-	const note = c.req.query("note") ?? undefined;
+app.get('/api/test-workflow', async (c) => {
+	const note = c.req.query('note') ?? undefined;
 	const sessionId = crypto.randomUUID();
 
 	const instance = await c.env.CARICATURE_WORKFLOW.create({
@@ -3324,14 +4406,14 @@ app.get("/api/test-workflow", async (c) => {
  * Returns the live status of a workflow instance.
  * GET /api/test-workflow/:id
  */
-app.get("/api/test-workflow/:id", async (c) => {
-	const id = c.req.param("id");
+app.get('/api/test-workflow/:id', async (c) => {
+	const id = c.req.param('id');
 	try {
 		const instance = await c.env.CARICATURE_WORKFLOW.get(id);
 		const status = await instance.status();
 		return c.json({ ok: true, instanceId: id, status });
 	} catch (err) {
-		return c.json({ error: "instance not found", details: String(err) }, 404);
+		return c.json({ error: 'instance not found', details: String(err) }, 404);
 	}
 });
 
@@ -3343,17 +4425,9 @@ app.get("/api/test-workflow/:id", async (c) => {
 // before wiring the workflow to it in 5.4.
 // ---------------------------------------------------------------------------
 
-const UUID_RE =
-	/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
-const VALID_SESSION_STATUSES = [
-	"queued",
-	"moderating",
-	"generating",
-	"compositing",
-	"done",
-	"errored",
-] as const;
+const VALID_SESSION_STATUSES = ['queued', 'moderating', 'generating', 'compositing', 'done', 'errored'] as const;
 type SessionStatusName = (typeof VALID_SESSION_STATUSES)[number];
 
 function getSessionStub(env: Env, sessionId: string) {
@@ -3365,7 +4439,7 @@ function getSessionStub(env: Env, sessionId: string) {
  * Creates a new session DO (random UUID) and seeds it to status=queued.
  * POST /api/test-session
  */
-app.post("/api/test-session", async (c) => {
+app.post('/api/test-session', async (c) => {
 	const sessionId = crypto.randomUUID();
 	const stub = getSessionStub(c.env, sessionId);
 	const state = await stub.getState(sessionId);
@@ -3376,9 +4450,9 @@ app.post("/api/test-session", async (c) => {
  * Returns the current state of a session DO.
  * GET /api/test-session/:id
  */
-app.get("/api/test-session/:id", async (c) => {
-	const id = c.req.param("id");
-	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
+app.get('/api/test-session/:id', async (c) => {
+	const id = c.req.param('id');
+	if (!UUID_RE.test(id)) return c.json({ error: 'invalid session id' }, 400);
 	const stub = getSessionStub(c.env, id);
 	const state = await stub.getState(id);
 	return c.json({ ok: true, sessionId: id, state });
@@ -3391,25 +4465,22 @@ app.get("/api/test-session/:id", async (c) => {
  *
  * Step 5.2: invalid transitions now return 409 with the allowed next states.
  */
-app.post("/api/test-session/:id/status", async (c) => {
-	const id = c.req.param("id");
-	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
+app.post('/api/test-session/:id/status', async (c) => {
+	const id = c.req.param('id');
+	if (!UUID_RE.test(id)) return c.json({ error: 'invalid session id' }, 400);
 
 	// Accept JSON, form-urlencoded, multipart form-data, or ?status= query
 	// param so curl, the HTML form, and fetch(FormData) all work.
-	const ct = c.req.header("content-type") ?? "";
+	const ct = c.req.header('content-type') ?? '';
 	let parsed: Record<string, unknown> = {};
-	const qs = c.req.query("status");
+	const qs = c.req.query('status');
 	if (qs) parsed.status = qs;
 
 	if (!parsed.status) {
 		try {
-			if (ct.includes("application/json")) {
+			if (ct.includes('application/json')) {
 				parsed = (await c.req.json()) as Record<string, unknown>;
-			} else if (
-				ct.includes("application/x-www-form-urlencoded") ||
-				ct.includes("multipart/form-data")
-			) {
+			} else if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/form-data')) {
 				const fd = await c.req.formData();
 				for (const [k, v] of fd.entries()) parsed[k] = v;
 			} else {
@@ -3420,7 +4491,7 @@ app.post("/api/test-session/:id/status", async (c) => {
 		} catch (err) {
 			return c.json(
 				{
-					error: "failed to parse body",
+					error: 'failed to parse body',
 					details: String(err),
 					contentType: ct,
 				},
@@ -3430,56 +4501,35 @@ app.post("/api/test-session/:id/status", async (c) => {
 	}
 
 	const status = parsed.status;
-	if (
-		typeof status !== "string" ||
-		!VALID_SESSION_STATUSES.includes(status as SessionStatusName)
-	) {
-		return c.json(
-			{ error: "invalid status", validStatuses: VALID_SESSION_STATUSES },
-			400,
-		);
+	if (typeof status !== 'string' || !VALID_SESSION_STATUSES.includes(status as SessionStatusName)) {
+		return c.json({ error: 'invalid status', validStatuses: VALID_SESSION_STATUSES }, 400);
 	}
 
 	const payload = {
-		sceneId: typeof parsed.sceneId === "string" ? parsed.sceneId : undefined,
-		sceneName:
-			typeof parsed.sceneName === "string" ? parsed.sceneName : undefined,
-		selfieKey:
-			typeof parsed.selfieKey === "string" ? parsed.selfieKey : undefined,
-		caricatureKey:
-			typeof parsed.caricatureKey === "string"
-				? parsed.caricatureKey
-				: undefined,
-		postcardKey:
-			typeof parsed.postcardKey === "string" ? parsed.postcardKey : undefined,
-		postcardUrl:
-			typeof parsed.postcardUrl === "string" ? parsed.postcardUrl : undefined,
-		error: typeof parsed.error === "string" ? parsed.error : undefined,
+		sceneId: typeof parsed.sceneId === 'string' ? parsed.sceneId : undefined,
+		sceneName: typeof parsed.sceneName === 'string' ? parsed.sceneName : undefined,
+		selfieKey: typeof parsed.selfieKey === 'string' ? parsed.selfieKey : undefined,
+		caricatureKey: typeof parsed.caricatureKey === 'string' ? parsed.caricatureKey : undefined,
+		postcardKey: typeof parsed.postcardKey === 'string' ? parsed.postcardKey : undefined,
+		postcardUrl: typeof parsed.postcardUrl === 'string' ? parsed.postcardUrl : undefined,
+		error: typeof parsed.error === 'string' ? parsed.error : undefined,
 		elapsedMs:
-			typeof parsed.elapsedMs === "string"
-				? Number(parsed.elapsedMs)
-				: typeof parsed.elapsedMs === "number"
-					? parsed.elapsedMs
-					: undefined,
+			typeof parsed.elapsedMs === 'string' ? Number(parsed.elapsedMs) : typeof parsed.elapsedMs === 'number' ? parsed.elapsedMs : undefined,
 	};
 
 	const stub = getSessionStub(c.env, id);
 	try {
-		const state = await stub.markStep(
-			status as SessionStatusName,
-			payload,
-			id,
-		);
+		const state = await stub.markStep(status as SessionStatusName, payload, id);
 		return c.json({ ok: true, sessionId: id, state });
 	} catch (err) {
 		const msg = String(err);
 		// InvalidTransitionError is thrown across RPC as a plain error; match
 		// on the message we know the DO produces.
-		if (msg.includes("invalid session transition")) {
+		if (msg.includes('invalid session transition')) {
 			return c.json(
 				{
-					error: msg.replace(/^Error: /, ""),
-					hint: "see TRANSITIONS table in src/session/session.ts",
+					error: msg.replace(/^Error: /, ''),
+					hint: 'see TRANSITIONS table in src/session/session.ts',
 				},
 				409,
 			);
@@ -3494,9 +4544,9 @@ app.post("/api/test-session/:id/status", async (c) => {
  * for testing.
  * DELETE /api/test-session/:id
  */
-app.delete("/api/test-session/:id", async (c) => {
-	const id = c.req.param("id");
-	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
+app.delete('/api/test-session/:id', async (c) => {
+	const id = c.req.param('id');
+	if (!UUID_RE.test(id)) return c.json({ error: 'invalid session id' }, 400);
 	const stub = getSessionStub(c.env, id);
 	await stub.delete();
 	return c.json({ ok: true, sessionId: id, deleted: true });
@@ -3509,11 +4559,11 @@ app.delete("/api/test-session/:id", async (c) => {
  *
  * GET /api/session/:id/ws  (with Upgrade: websocket)
  */
-eventApp.get("/api/session/:id/ws", async (c) => {
-	const id = c.req.param("id");
-	if (!UUID_RE.test(id)) return c.json({ error: "invalid session id" }, 400);
-	if (c.req.header("Upgrade") !== "websocket") {
-		return c.json({ error: "expected websocket upgrade" }, 426);
+eventApp.get('/api/session/:id/ws', async (c) => {
+	const id = c.req.param('id');
+	if (!UUID_RE.test(id)) return c.json({ error: 'invalid session id' }, 400);
+	if (c.req.header('Upgrade') !== 'websocket') {
+		return c.json({ error: 'expected websocket upgrade' }, 426);
 	}
 	const stub = getSessionStub(c.env, id);
 	// Pass the raw request through so the DO sees the Upgrade headers.
@@ -3526,10 +4576,10 @@ eventApp.get("/api/session/:id/ws", async (c) => {
  * GET /test-session       — landing / create
  * GET /test-session/:id   — drive an existing session
  */
-app.get("/test-session", (c) => {
+app.get('/test-session', (c) => {
 	return c.html(
 		page(
-			"Session DO — Step 5.3",
+			'Session DO — Step 5.3',
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Session Durable Object</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
@@ -3556,12 +4606,10 @@ app.get("/test-session", (c) => {
 	);
 });
 
-app.get("/test-session/:id", (c) => {
-	const id = c.req.param("id");
+app.get('/test-session/:id', (c) => {
+	const id = c.req.param('id');
 	if (!UUID_RE.test(id)) return c.notFound();
-	const statusOptions = VALID_SESSION_STATUSES.map(
-		(s) => `<option value="${s}">${s}</option>`,
-	).join("");
+	const statusOptions = VALID_SESSION_STATUSES.map((s) => `<option value="${s}">${s}</option>`).join('');
 	return c.html(
 		page(
 			`Session ${id.slice(0, 8)}…`,
@@ -3727,11 +4775,11 @@ app.get("/test-session/:id", (c) => {
  * Uploads a selfie, triggers the workflow, redirects to a status page.
  * GET /test-workflow-moderate
  */
-app.get("/test-workflow-moderate", async (c) => {
+app.get('/test-workflow-moderate', async (c) => {
 	const scenes = await loadScenes(c.env);
 	return c.html(
 		page(
-			"Workflow — Step 4.4",
+			'Workflow — Step 4.4',
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Workflow: full pipeline</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
@@ -3793,18 +4841,18 @@ app.get("/test-workflow-moderate", async (c) => {
  * scene id. Redirects (303) to a status page that polls the workflow instance.
  * POST /api/test-workflow-moderate  (multipart: selfie=file, scene_id=string)
  */
-app.post("/api/test-workflow-moderate", async (c) => {
+app.post('/api/test-workflow-moderate', async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
 	} catch (err) {
 		return c.json({ error: "expected multipart/form-data with 'selfie'", details: String(err) }, 400);
 	}
-	const selfie = inForm.get("selfie");
+	const selfie = inForm.get('selfie');
 	if (!(selfie instanceof File) || selfie.size === 0) {
-		return c.json({ error: "missing selfie file" }, 400);
+		return c.json({ error: 'missing selfie file' }, 400);
 	}
-	const sceneId = String(inForm.get("scene_id") ?? "hot-dog-stand");
+	const sceneId = String(inForm.get('scene_id') ?? 'hot-dog-stand');
 
 	// Validate scene id against KV up front so we fail fast (before paying
 	// the cost of an R2 upload + workflow create).
@@ -3819,14 +4867,14 @@ app.post("/api/test-workflow-moderate", async (c) => {
 	}
 
 	const sessionId = crypto.randomUUID();
-	const ext = (selfie.name.match(/\.(jpe?g|png|webp|heic)$/i)?.[1] ?? "jpg").toLowerCase();
+	const ext = (selfie.name.match(/\.(jpe?g|png|webp|heic)$/i)?.[1] ?? 'jpg').toLowerCase();
 	const selfieKey = `workflow-test/${sessionId}/selfie.${ext}`;
 
 	await c.env.BUCKET.put(selfieKey, await selfie.arrayBuffer(), {
-		httpMetadata: { contentType: selfie.type || "image/jpeg" },
+		httpMetadata: { contentType: selfie.type || 'image/jpeg' },
 		customMetadata: {
 			sessionId,
-			originalName: selfie.name || "(unnamed)",
+			originalName: selfie.name || '(unnamed)',
 		},
 	});
 
@@ -3837,7 +4885,7 @@ app.post("/api/test-workflow-moderate", async (c) => {
 			selfieKey,
 			sceneId,
 			publicOrigin,
-			note: "step-4.4-full-pipeline-test",
+			note: 'step-4.4-full-pipeline-test',
 		},
 	});
 
@@ -3852,14 +4900,13 @@ app.post("/api/test-workflow-moderate", async (c) => {
  * Auto-polls /api/test-workflow/:id every 1s until terminal state.
  * GET /test-workflow-moderate/:id
  */
-app.get("/test-workflow-moderate/:id", (c) => {
-	const id = c.req.param("id");
+app.get('/test-workflow-moderate/:id', (c) => {
+	const id = c.req.param('id');
 	if (!UUID_RE.test(id)) {
 		return c.notFound();
 	}
-	const sessionFromQs = c.req.query("session");
-	const sessionId =
-		sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
+	const sessionFromQs = c.req.query('session');
+	const sessionId = sessionFromQs && UUID_RE.test(sessionFromQs) ? sessionFromQs : null;
 
 	return c.html(
 		page(
@@ -3867,11 +4914,7 @@ app.get("/test-workflow-moderate/:id", (c) => {
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12 max-w-3xl mx-auto">
 				<h1 class="text-3xl font-bold mb-2">Workflow run</h1>
 				<p class="text-white/60 text-sm">Instance: <code class="text-white/80">${id}</code></p>
-				${
-					sessionId
-						? `<p class="text-white/60 text-sm mt-1">Session: <code class="text-white/80">${sessionId}</code></p>`
-						: ""
-				}
+				${sessionId ? `<p class="text-white/60 text-sm mt-1">Session: <code class="text-white/80">${sessionId}</code></p>` : ''}
 				<section class="w-full mt-8 rounded-2xl bg-white/5 border border-white/10 p-6">
 					<div class="flex items-center gap-3">
 						<span id="wf-pulse" class="size-3 rounded-full bg-yellow-400 animate-pulse"></span>
@@ -3898,7 +4941,7 @@ app.get("/test-workflow-moderate/:id", (c) => {
 								</div>
 								<pre id="sd-raw" class="text-[11px] whitespace-pre-wrap break-words text-white/60">awaiting first frame…</pre>
 							</section>`
-						: ""
+						: ''
 				}
 				<section id="wf-preview" class="w-full mt-6 rounded-2xl bg-white/5 border border-white/10 p-6 hidden">
 					<h2 class="text-sm font-semibold text-white/60 mb-4">Artifacts</h2>
@@ -4057,11 +5100,11 @@ app.get("/test-workflow-moderate/:id", (c) => {
  * Simple HTML test form for image-to-image generation.
  * GET /test-i2i
  */
-app.get("/test-i2i", async (c) => {
+app.get('/test-i2i', async (c) => {
 	const scenes = await loadScenes(c.env);
 	return c.html(
 		page(
-			"Test image-to-image — Step 2.2",
+			'Test image-to-image — Step 2.2',
 			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Image-to-image test</h1>
 				<p class="text-white/60 mb-8">Upload a selfie + pick a scene. FLUX.2 will generate a caricature.</p>
@@ -4128,18 +5171,18 @@ app.get("/test-i2i", async (c) => {
  * Image-to-image generation: selfie -> caricature in chosen NYC scene.
  * POST /api/test-i2i  (multipart: selfie=file, scene_id=string)
  */
-app.post("/api/test-i2i", async (c) => {
+app.post('/api/test-i2i', async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
 	} catch (err) {
 		return c.json({ error: "expected multipart/form-data with 'selfie'", details: String(err) }, 400);
 	}
-	const selfie = inForm.get("selfie");
-	const sceneId = String(inForm.get("scene_id") ?? "hot-dog-stand");
+	const selfie = inForm.get('selfie');
+	const sceneId = String(inForm.get('scene_id') ?? 'hot-dog-stand');
 
 	if (!(selfie instanceof File) || selfie.size === 0) {
-		return c.json({ error: "missing selfie file" }, 400);
+		return c.json({ error: 'missing selfie file' }, 400);
 	}
 
 	let scenes: Scene[];
@@ -4156,22 +5199,19 @@ app.post("/api/test-i2i", async (c) => {
 		// Use nano-banana via Replicate so this test endpoint matches
 		// what the production workflow (CaricatureWorkflow) uses. Iterating
 		// on prompts against FLUX would give misleading results.
-		const { bytes, contentType, elapsedMs } = await runReplicate(
-			c.env.REPLICATE_API_TOKEN,
-			{
-				prompt: scene.prompt,
-				selfieBytes,
-				selfieType: selfie.type,
-			},
-		);
+		const { bytes, contentType, elapsedMs } = await runReplicate(c.env.REPLICATE_API_TOKEN, {
+			prompt: scene.prompt,
+			selfieBytes,
+			selfieType: selfie.type,
+		});
 
 		return new Response(bytes, {
 			headers: {
-				"content-type": contentType,
-				"content-length": String(bytes.byteLength),
-				"x-elapsed-ms": String(elapsedMs),
-				"x-scene-id": scene.id,
-				"x-scene-name": scene.name,
+				'content-type': contentType,
+				'content-length': String(bytes.byteLength),
+				'x-elapsed-ms': String(elapsedMs),
+				'x-scene-id': scene.id,
+				'x-scene-name': scene.name,
 			},
 		});
 	} catch (err) {
@@ -4183,10 +5223,10 @@ app.post("/api/test-i2i", async (c) => {
  * Renders the scene-grid prompt-spike form.
  * GET /test-scene-grid
  */
-app.get("/test-scene-grid", (c) => {
+app.get('/test-scene-grid', (c) => {
 	return c.html(
 		page(
-			"Scene prompt spike — Step 2.3",
+			'Scene prompt spike — Step 2.3',
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Scene prompt spike</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
@@ -4239,16 +5279,16 @@ app.get("/test-scene-grid", (c) => {
  * redirects to the review page.
  * POST /api/test-scene-grid  (multipart: selfie=file)
  */
-app.post("/api/test-scene-grid", async (c) => {
+app.post('/api/test-scene-grid', async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
 	} catch (err) {
 		return c.json({ error: "expected multipart/form-data with 'selfie'", details: String(err) }, 400);
 	}
-	const selfie = inForm.get("selfie");
+	const selfie = inForm.get('selfie');
 	if (!(selfie instanceof File) || selfie.size === 0) {
-		return c.json({ error: "missing selfie file" }, 400);
+		return c.json({ error: 'missing selfie file' }, 400);
 	}
 
 	let scenes: Scene[];
@@ -4260,7 +5300,7 @@ app.post("/api/test-scene-grid", async (c) => {
 
 	const runId = String(Date.now());
 	const selfieBytes = await selfie.arrayBuffer();
-	const selfieType = selfie.type || "image/jpeg";
+	const selfieType = selfie.type || 'image/jpeg';
 
 	// Also stash the original selfie so the review page can show the input.
 	await c.env.BUCKET.put(`prompt-spike/${runId}/selfie.jpg`, selfieBytes, {
@@ -4273,15 +5313,12 @@ app.post("/api/test-scene-grid", async (c) => {
 			// Use nano-banana via Replicate so the scene grid matches the
 			// production workflow's model. Otherwise we'd be tuning prompts
 			// against the wrong model.
-			const { bytes, contentType, elapsedMs } = await runReplicate(
-				c.env.REPLICATE_API_TOKEN,
-				{
-					prompt: scene.prompt,
-					selfieBytes,
-					selfieType,
-				},
-			);
-			const ext = contentType === "image/png" ? "png" : "jpg";
+			const { bytes, contentType, elapsedMs } = await runReplicate(c.env.REPLICATE_API_TOKEN, {
+				prompt: scene.prompt,
+				selfieBytes,
+				selfieType,
+			});
+			const ext = contentType === 'image/png' ? 'png' : 'jpg';
 			const key = `prompt-spike/${runId}/${scene.id}.${ext}`;
 			await c.env.BUCKET.put(key, bytes, {
 				httpMetadata: { contentType },
@@ -4297,20 +5334,16 @@ app.post("/api/test-scene-grid", async (c) => {
 	);
 	const totalMs = Date.now() - overallStart;
 
-	const successes = results
-		.map((r, i) => ({ scene: scenes[i], result: r }))
-		.filter((x) => x.result.status === "fulfilled");
-	const failures = results
-		.map((r, i) => ({ scene: scenes[i], result: r }))
-		.filter((x) => x.result.status === "rejected");
+	const successes = results.map((r, i) => ({ scene: scenes[i], result: r })).filter((x) => x.result.status === 'fulfilled');
+	const failures = results.map((r, i) => ({ scene: scenes[i], result: r })).filter((x) => x.result.status === 'rejected');
 
 	// Redirect (303 = POST-redirect-GET) to the review page for this run.
 	const url = new URL(c.req.url);
 	url.pathname = `/test-scene-grid/${runId}`;
-	url.search = "";
-	c.header("x-total-ms", String(totalMs));
-	c.header("x-successes", String(successes.length));
-	c.header("x-failures", String(failures.length));
+	url.search = '';
+	c.header('x-total-ms', String(totalMs));
+	c.header('x-successes', String(successes.length));
+	c.header('x-failures', String(failures.length));
 	return c.redirect(url.toString(), 303);
 });
 
@@ -4318,8 +5351,8 @@ app.post("/api/test-scene-grid", async (c) => {
  * Side-by-side review page for a scene-grid run.
  * GET /test-scene-grid/:runId
  */
-app.get("/test-scene-grid/:runId", async (c) => {
-	const runId = c.req.param("runId");
+app.get('/test-scene-grid/:runId', async (c) => {
+	const runId = c.req.param('runId');
 	if (!/^\d+$/.test(runId)) return c.notFound();
 
 	const scenes = await loadScenes(c.env);
@@ -4328,11 +5361,11 @@ app.get("/test-scene-grid/:runId", async (c) => {
 	const keysByScene = new Map<string, string>();
 	for (const obj of listing.objects) {
 		const filename = obj.key.slice(prefix.length); // "<sceneId>.jpg" or "selfie.jpg"
-		const sceneId = filename.replace(/\.(jpg|png)$/i, "");
+		const sceneId = filename.replace(/\.(jpg|png)$/i, '');
 		keysByScene.set(sceneId, obj.key);
 	}
 
-	const selfieKey = keysByScene.get("selfie");
+	const selfieKey = keysByScene.get('selfie');
 	const generatedAt = new Date(Number(runId)).toLocaleString();
 
 	const cards = scenes
@@ -4357,7 +5390,7 @@ app.get("/test-scene-grid/:runId", async (c) => {
 					</details>
 				</article>`;
 		})
-		.join("\n");
+		.join('\n');
 
 	const selfieHtml = selfieKey
 		? `<img src="/api/scene-grid-img?key=${encodeURIComponent(selfieKey)}" alt="Input selfie" class="size-32 rounded-2xl object-cover border border-white/20" />`
@@ -4388,18 +5421,18 @@ app.get("/test-scene-grid/:runId", async (c) => {
  * Serves an R2 object back as an image. Used by the review page.
  * GET /api/scene-grid-img?key=prompt-spike/<runId>/<sceneId>.jpg
  */
-app.get("/api/scene-grid-img", async (c) => {
-	const key = c.req.query("key");
-	if (!key || !key.startsWith("prompt-spike/")) {
-		return c.json({ error: "invalid key" }, 400);
+app.get('/api/scene-grid-img', async (c) => {
+	const key = c.req.query('key');
+	if (!key || !key.startsWith('prompt-spike/')) {
+		return c.json({ error: 'invalid key' }, 400);
 	}
 	const obj = await c.env.BUCKET.get(key);
-	if (!obj) return c.json({ error: "not found", key }, 404);
+	if (!obj) return c.json({ error: 'not found', key }, 404);
 	return new Response(obj.body, {
 		headers: {
-			"content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
-			"content-length": String(obj.size),
-			"cache-control": "public, max-age=3600",
+			'content-type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+			'content-length': String(obj.size),
+			'cache-control': 'public, max-age=3600',
 		},
 	});
 });
@@ -4411,27 +5444,27 @@ app.get("/api/scene-grid-img", async (c) => {
  * picker preview.
  * GET /api/run-img?key=(runs|kiosk)/<sessionId>/...
  */
-app.get("/api/run-img", async (c) => {
-	const key = c.req.query("key");
-	if (!key || (!key.startsWith("runs/") && !key.startsWith("kiosk/"))) {
-		return c.json({ error: "invalid key" }, 400);
+app.get('/api/run-img', async (c) => {
+	const key = c.req.query('key');
+	if (!key || (!key.startsWith('runs/') && !key.startsWith('kiosk/'))) {
+		return c.json({ error: 'invalid key' }, 400);
 	}
 	const obj = await c.env.BUCKET.get(key);
-	if (!obj) return c.json({ error: "not found", key }, 404);
+	if (!obj) return c.json({ error: 'not found', key }, 404);
 
 	const headers: Record<string, string> = {
-		"content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
-		"content-length": String(obj.size),
-		"cache-control": "public, max-age=3600",
+		'content-type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+		'content-length': String(obj.size),
+		'cache-control': 'public, max-age=3600',
 	};
 
 	// Optional ?download=1 — force the browser to download instead of preview.
 	// Used by the /p/:id digital pickup landing's "Download" button. We pick
 	// a friendly filename based on the last path segment of the R2 key so the
 	// user gets `postcard.jpg` instead of a UUID-laden URL.
-	if (c.req.query("download")) {
-		const tail = key.split("/").pop() ?? "image";
-		headers["content-disposition"] = `attachment; filename="caricature-${tail}"`;
+	if (c.req.query('download')) {
+		const tail = key.split('/').pop() ?? 'image';
+		headers['content-disposition'] = `attachment; filename="caricature-${tail}"`;
 	}
 
 	return new Response(obj.body, { headers });
@@ -4441,10 +5474,10 @@ app.get("/api/run-img", async (c) => {
  * Renders the moderation test form.
  * GET /test-moderate
  */
-app.get("/test-moderate", (c) => {
+app.get('/test-moderate', (c) => {
 	return c.html(
 		page(
-			"Moderation test — Step 2.4",
+			'Moderation test — Step 2.4',
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Moderation test</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
@@ -4494,16 +5527,16 @@ app.get("/test-moderate", (c) => {
  * Runs llama-3.2-11b-vision-instruct on an uploaded image and returns a safety verdict.
  * POST /api/test-moderate  (multipart: image=file)
  */
-app.post("/api/test-moderate", async (c) => {
+app.post('/api/test-moderate', async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
 	} catch (err) {
 		return c.json({ error: "expected multipart/form-data with 'image'", details: String(err) }, 400);
 	}
-	const image = inForm.get("image");
+	const image = inForm.get('image');
 	if (!(image instanceof File) || image.size === 0) {
-		return c.json({ error: "missing image file" }, 400);
+		return c.json({ error: 'missing image file' }, 400);
 	}
 
 	const buf = await image.arrayBuffer();
@@ -4528,10 +5561,10 @@ app.post("/api/test-moderate", async (c) => {
  * Renders the watermark test form.
  * GET /test-watermark
  */
-app.get("/test-watermark", (c) => {
+app.get('/test-watermark', (c) => {
 	return c.html(
 		page(
-			"Watermark test — Step 3.1",
+			'Watermark test — Step 3.1',
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Watermark composition</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
@@ -4587,23 +5620,23 @@ app.get("/test-watermark", (c) => {
  * Output is a JPEG with the watermark in the bottom-right corner.
  * POST /api/test-watermark  (multipart: image=file)
  */
-app.post("/api/test-watermark", async (c) => {
+app.post('/api/test-watermark', async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
 	} catch (err) {
 		return c.json({ error: "expected multipart/form-data with 'image'", details: String(err) }, 400);
 	}
-	const image = inForm.get("image");
+	const image = inForm.get('image');
 	if (!(image instanceof File) || image.size === 0) {
-		return c.json({ error: "missing image file" }, 400);
+		return c.json({ error: 'missing image file' }, 400);
 	}
 
 	// Fetch watermark from our static assets binding
-	const wmReq = new Request("http://internal/watermark.png");
+	const wmReq = new Request('http://internal/watermark.png');
 	const wmResp = await c.env.ASSETS.fetch(wmReq);
 	if (!wmResp.ok || !wmResp.body) {
-		return c.json({ error: "watermark asset not available" }, 500);
+		return c.json({ error: 'watermark asset not available' }, 500);
 	}
 
 	const started = Date.now();
@@ -4614,18 +5647,15 @@ app.post("/api/test-watermark", async (c) => {
 		// Watermark width ≈ 40% of postcard width (the brand mark is wide because the
 		// Cloudflare logo is a long horizontal cloud — see public/watermark.png).
 		const result = await c.env.IMAGES.input(baseStream)
-			.draw(
-				c.env.IMAGES.input(wmStream).transform({ width: 400 }),
-				{ bottom: 32, right: 32, opacity: 0.95 },
-			)
-			.output({ format: "image/jpeg" });
+			.draw(c.env.IMAGES.input(wmStream).transform({ width: 400 }), { bottom: 32, right: 32, opacity: 0.95 })
+			.output({ format: 'image/jpeg' });
 
 		const response = result.response();
 		const elapsedMs = Date.now() - started;
-		response.headers.set("x-elapsed-ms", String(elapsedMs));
+		response.headers.set('x-elapsed-ms', String(elapsedMs));
 		return response;
 	} catch (err) {
-		return c.json({ error: "watermark composition failed", details: String(err) }, 500);
+		return c.json({ error: 'watermark composition failed', details: String(err) }, 500);
 	}
 });
 
@@ -4633,10 +5663,10 @@ app.post("/api/test-watermark", async (c) => {
  * Renders the postcard test form.
  * GET /test-postcard
  */
-app.get("/test-postcard", (c) => {
+app.get('/test-postcard', (c) => {
 	return c.html(
 		page(
-			"Postcard format — Step 3.3",
+			'Postcard format — Step 3.3',
 			`<main class="min-h-screen flex flex-col items-center px-6 py-12">
 				<h1 class="text-3xl font-bold mb-2">Postcard format</h1>
 				<p class="text-white/60 mb-8 max-w-xl text-center">
@@ -4694,19 +5724,19 @@ app.get("/test-postcard", (c) => {
  * Includes watermark composition.
  * POST /api/test-postcard  (multipart: image=file)
  */
-app.post("/api/test-postcard", async (c) => {
+app.post('/api/test-postcard', async (c) => {
 	let inForm: FormData;
 	try {
 		inForm = await c.req.formData();
 	} catch (err) {
 		return c.json({ error: "expected multipart/form-data with 'image'", details: String(err) }, 400);
 	}
-	const image = inForm.get("image");
+	const image = inForm.get('image');
 	if (!(image instanceof File) || image.size === 0) {
-		return c.json({ error: "missing image file" }, 400);
+		return c.json({ error: 'missing image file' }, 400);
 	}
 
-	const includeQr = inForm.get("include_qr") === "on";
+	const includeQr = inForm.get('include_qr') === 'on';
 	const postcardId = includeQr ? newPostcardId() : undefined;
 	const qrUrl = postcardId ? `${new URL(c.req.url).origin}/p/${postcardId}` : undefined;
 
@@ -4714,15 +5744,15 @@ app.post("/api/test-postcard", async (c) => {
 	try {
 		const response = await buildPostcard(c.env, image.stream(), { qrUrl });
 		const elapsedMs = Date.now() - started;
-		response.headers.set("x-elapsed-ms", String(elapsedMs));
-		response.headers.set("x-postcard-dimensions", `${POSTCARD_W}x${POSTCARD_H}`);
+		response.headers.set('x-elapsed-ms', String(elapsedMs));
+		response.headers.set('x-postcard-dimensions', `${POSTCARD_W}x${POSTCARD_H}`);
 		if (postcardId) {
-			response.headers.set("x-postcard-id", postcardId);
-			response.headers.set("x-postcard-url", qrUrl!);
+			response.headers.set('x-postcard-id', postcardId);
+			response.headers.set('x-postcard-url', qrUrl!);
 		}
 		return response;
 	} catch (err) {
-		return c.json({ error: "postcard build failed", details: String(err) }, 500);
+		return c.json({ error: 'postcard build failed', details: String(err) }, 500);
 	}
 });
 
@@ -4734,8 +5764,8 @@ app.post("/api/test-postcard", async (c) => {
  * The `id` is rendered as a short hex preview but not echoed verbatim into
  * the HTML beyond `.slice(0, 8)` so we don't reflect arbitrary input.
  */
-function brandedPostcardNotFound(c: Context<any>, id?: string, emptyEmoji = "🎨") {
-	const idPreview = id ? id.slice(0, 8) : "";
+function brandedPostcardNotFound(c: Context<any>, id?: string, emptyEmoji = '🎨') {
+	const idPreview = id ? id.slice(0, 8) : '';
 	const previewHtml = idPreview
 		? `<p class="text-white/60 mb-2">No session matches <code class="text-cf-orange">${idPreview}…</code></p>`
 		: `<p class="text-white/60 mb-2">No postcard at this address.</p>`;
@@ -4743,7 +5773,7 @@ function brandedPostcardNotFound(c: Context<any>, id?: string, emptyEmoji = "�
 	c.status(404);
 	return c.html(
 		page(
-			"Postcard not found",
+			'Postcard not found',
 			`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 				<div class="text-center max-w-xl">
 					<div class="text-6xl mb-6">${emptyEmoji}</div>
@@ -4782,10 +5812,10 @@ function brandedPostcardNotFound(c: Context<any>, id?: string, emptyEmoji = "�
  * Public — UUIDs are unguessable enough for an event activation, and
  * /api/run-img is already public for `runs/` keys. No auth gate.
  */
-eventApp.get("/p/:id", async (c) => {
-	const { event } = c.get("eventCtx");
-	const basePath = c.get("basePath");
-	const id = c.req.param("id");
+eventApp.get('/p/:id', async (c) => {
+	const { event } = c.get('eventCtx');
+	const basePath = c.get('basePath');
+	const id = c.req.param('id');
 	const isShortSlug = /^[a-z2-9]{6,16}$/.test(id);
 	const isUuid = UUID_RE.test(id);
 
@@ -4794,7 +5824,7 @@ eventApp.get("/p/:id", async (c) => {
 
 	// ---- Malformed id — branded 404 ----
 	if (!isShortSlug && !isUuid) {
-		return brandedPostcardNotFound(c, id, event.empty_state_emoji);
+		return brandedPostcardNotFound(c, id);
 	}
 
 	// ---- Legacy short slug (older sample postcards). Not a real session. ----
@@ -4840,59 +5870,62 @@ eventApp.get("/p/:id", async (c) => {
 
 	// ---- Not found in D1 ----
 	if (!row) {
-		return brandedPostcardNotFound(c, id, event.empty_state_emoji);
+		return brandedPostcardNotFound(c, id);
 	}
 
 	// ---- Still in progress (workflow hasn't reached `store` yet) ----
-	if (row.status !== "completed" || !row.postcard_key) {
-		const isErrored = row.status === "errored";
-		const isModerationReject = isErrored && row.error_msg?.includes("moderation rejected");
+	if (row.status !== 'completed' || !row.postcard_key) {
+		const isErrored = row.status === 'errored';
+		const isModerationReject = isErrored && row.error_msg?.includes('moderation rejected');
 		const stateLabel = isModerationReject
-			? "Your photo didn\u2019t pass our content check"
+			? 'Your photo didn\u2019t pass our content check'
 			: isErrored
-				? "Something went wrong with this postcard"
-				: "Your postcard is still being generated\u2026";
+				? 'Something went wrong with this postcard'
+				: 'Your postcard is still being generated\u2026';
 		const helpCopy = isModerationReject
-			? "Head back to the booth and try again with a different selfie."
+			? 'Head back to the booth and try again with a different selfie.'
 			: isErrored
-				? "Head back to the booth and the staff will help you start a new one."
-				: "Hang tight \u2014 this page will refresh automatically. The whole pipeline usually finishes in under a minute.";
+				? 'Head back to the booth and the staff will help you start a new one.'
+				: 'Hang tight \u2014 this page will refresh automatically. The whole pipeline usually finishes in under a minute.';
 
 		// Track retries via a query param so we can cap auto-refresh at
 		// ~60s (12 tries * 5s each) instead of polling forever. After the
 		// cap we switch to a manual "Refresh" button.
-		const retryParam = c.req.query("_retry");
+		const retryParam = c.req.query('_retry');
 		const retryCount = retryParam ? parseInt(retryParam, 10) || 0 : 0;
 		const MAX_RETRIES = 12;
 		const shouldAutoRefresh = !isErrored && retryCount < MAX_RETRIES;
 		const nextRetryUrl = `${basePath}/p/${id}?_retry=${retryCount + 1}`;
 
-		const timedOutCopy = retryCount >= MAX_RETRIES && !isErrored
-			? `<p class="text-white/50 text-sm mt-4">It's taking longer than usual. Your postcard may still be processing.</p>
+		const timedOutCopy =
+			retryCount >= MAX_RETRIES && !isErrored
+				? `<p class="text-white/50 text-sm mt-4">It's taking longer than usual. Your postcard may still be processing.</p>
 			   <a href="${basePath}/p/${id}" class="mt-4 inline-flex items-center justify-center rounded-full bg-cf-orange px-6 py-3 text-sm font-bold text-black hover:bg-cf-orange-dark transition">Refresh</a>`
-			: "";
+				: '';
 
 		return c.html(
 			page(
-				"Your postcard \u2014 preparing\u2026",
+				'Your postcard \u2014 preparing\u2026',
 				`<main class="min-h-screen flex flex-col items-center justify-center px-6 py-12">
 					<div class="text-center max-w-xl">
-						${isErrored
-							? `<div class="mx-auto mb-6 size-16 rounded-full border-2 border-red-400/30 bg-red-500/10 flex items-center justify-center text-2xl" aria-hidden="true">\u26a0\ufe0f</div>`
-							: `<div class="mx-auto mb-6 size-16 rounded-full border-2 border-cf-orange/40 border-t-cf-orange animate-spin"></div>`}
+						${
+							isErrored
+								? `<div class="mx-auto mb-6 size-16 rounded-full border-2 border-red-400/30 bg-red-500/10 flex items-center justify-center text-2xl" aria-hidden="true">\u26a0\ufe0f</div>`
+								: `<div class="mx-auto mb-6 size-16 rounded-full border-2 border-cf-orange/40 border-t-cf-orange animate-spin"></div>`
+						}
 						<h1 class="text-3xl font-bold mb-3">${stateLabel}</h1>
 						<p class="text-white/60">${helpCopy}</p>
 						${timedOutCopy}
 						<p class="text-white/40 text-xs mt-6">session ${id.slice(0, 8)}\u2026</p>
 					</div>
 				</main>
-				${shouldAutoRefresh ? `<script>setTimeout(function(){ window.location.href = ${JSON.stringify(nextRetryUrl)}; }, 5000);</script>` : ""}`,
+				${shouldAutoRefresh ? `<script>setTimeout(function(){ window.location.href = ${JSON.stringify(nextRetryUrl)}; }, 5000);</script>` : ''}`,
 			),
 		);
 	}
 
 	// ---- Happy path: completed session with a postcard ----
-	const sceneName = row.scene_name ?? "Scene";
+	const sceneName = row.scene_name ?? 'Scene';
 	const postcardKey = row.postcard_key;
 	const postcardSrc = `/api/run-img?key=${encodeURIComponent(postcardKey)}`;
 	const downloadSrc = `/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`;
@@ -4900,16 +5933,16 @@ eventApp.get("/p/:id", async (c) => {
 	// Format completed_at as a human-readable date (UTC ok — this is a souvenir,
 	// timezone precision isn't critical and avoids a libraries-free pitfall).
 	const completedLabel = row.completed_at
-		? new Date(row.completed_at * 1000).toLocaleString("en-US", {
-				month: "short",
-				day: "numeric",
-				year: "numeric",
-				hour: "numeric",
-				minute: "2-digit",
+		? new Date(row.completed_at * 1000).toLocaleString('en-US', {
+				month: 'short',
+				day: 'numeric',
+				year: 'numeric',
+				hour: 'numeric',
+				minute: '2-digit',
 				timeZone: event.timezone,
-				timeZoneName: "short",
+				timeZoneName: 'short',
 			})
-		: "Just now";
+		: 'Just now';
 
 	return c.html(
 		page(
@@ -4959,8 +5992,9 @@ eventApp.get("/p/:id", async (c) => {
 					<!-- Email opt-in form -->
 					<section id="email-slot"
 						class="rounded-2xl border border-white/10 bg-white/[0.03] p-6 sm:p-8">
-						${row.email
-							? `<!-- Already submitted -->
+						${
+							row.email
+								? `<!-- Already submitted -->
 								<div class="flex flex-col items-center gap-2 text-center">
 									<div class="flex items-center gap-2 text-cf-orange text-sm font-medium">
 										<svg class="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
@@ -4972,7 +6006,7 @@ eventApp.get("/p/:id", async (c) => {
 										We'll send your postcard to <span class="text-white/80 font-medium">${row.email}</span> once email delivery is wired up.
 									</p>
 								</div>`
-							: `<!-- Email form -->
+								: `<!-- Email form -->
 								<div class="text-center mb-4">
 									<h2 class="text-lg font-semibold text-white/90 mb-1">Get a digital copy emailed to you</h2>
 									<p class="text-sm text-white/50">We'll send your high-res postcard — no spam, just the one email.</p>
@@ -4998,7 +6032,8 @@ eventApp.get("/p/:id", async (c) => {
 									</button>
 								</form>
 								<p id="email-error" class="hidden text-sm text-red-400 text-center mt-2"></p>
-								<p id="email-success" class="hidden text-sm text-cf-orange text-center mt-3"></p>`}
+								<p id="email-success" class="hidden text-sm text-cf-orange text-center mt-3"></p>`
+						}
 					</section>
 
 					<!-- Footer -->
@@ -5110,59 +6145,53 @@ eventApp.get("/p/:id", async (c) => {
  *
  * POST /api/p/:id/email  body: { email }
  */
-eventApp.post("/api/p/:id/email", async (c) => {
-	const id = c.req.param("id");
+eventApp.post('/api/p/:id/email', async (c) => {
+	const id = c.req.param('id');
 	if (!UUID_RE.test(id)) {
-		return c.json({ error: "invalid session id" }, 400);
+		return c.json({ error: 'invalid session id' }, 400);
 	}
 
 	let body: { email?: unknown };
 	try {
 		body = await c.req.json();
 	} catch (err) {
-		return c.json({ error: "expected JSON body { email }", details: String(err) }, 400);
+		return c.json({ error: 'expected JSON body { email }', details: String(err) }, 400);
 	}
 
-	const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+	const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
 	// Minimal email validation — we're not going to RFC-5322 this, but
 	// we do want to catch obvious garbage before it hits D1.
 	if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-		return c.json({ error: "invalid email address" }, 400);
+		return c.json({ error: 'invalid email address' }, 400);
 	}
 	if (email.length > 320) {
-		return c.json({ error: "email address too long" }, 400);
+		return c.json({ error: 'email address too long' }, 400);
 	}
 
 	// Verify the session is completed. No point in storing email for a
 	// session that never produced a postcard.
-	const session = await c.env.DB.prepare(
-		"SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?",
-	)
+	const session = await c.env.DB.prepare('SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?')
 		.bind(id)
 		.first<{ id: string; status: string | null; postcard_key: string | null; scene_name: string | null }>();
 
 	if (!session) {
-		return c.json({ error: "session not found" }, 404);
+		return c.json({ error: 'session not found' }, 404);
 	}
-	if (session.status !== "completed" || !session.postcard_key) {
-		return c.json({ error: "session is not completed" }, 409);
+	if (session.status !== 'completed' || !session.postcard_key) {
+		return c.json({ error: 'session is not completed' }, 409);
 	}
 
-	await c.env.DB.prepare(
-		"UPDATE sessions SET email = ?, email_submitted_at = unixepoch() WHERE id = ?",
-	)
-		.bind(email, id)
-		.run();
+	await c.env.DB.prepare('UPDATE sessions SET email = ?, email_submitted_at = unixepoch() WHERE id = ?').bind(email, id).run();
 
 	console.log(`[email-optin] session=${id} email=${email.slice(0, 3)}***`);
-	trackEvent(c.env.ANALYTICS, "email.captured", id);
+	trackEvent(c.env.ANALYTICS, 'email.captured', id);
 
 	// Fire-and-forget: send the postcard email. Don't fail the opt-in if
 	// the email fails — the address is already persisted in D1 and can be
 	// retried from the admin dashboard (Phase 10).
 	const origin = new URL(c.req.url).origin;
 	const postcardKey = session.postcard_key;
-	const sceneName = session.scene_name ?? "Scene";
+	const sceneName = session.scene_name ?? 'Scene';
 	c.executionCtx.waitUntil(
 		sendPostcardEmail(c.env, {
 			to: email,
@@ -5188,27 +6217,27 @@ eventApp.post("/api/p/:id/email", async (c) => {
  * defeats the whole point of friendly error pages here. The branded 404
  * is harmless on any path under /p/ — it doesn't echo arbitrary input.
  */
-eventApp.get("/p", (c) => brandedPostcardNotFound(c));
-eventApp.get("/p/:id/*", (c) => brandedPostcardNotFound(c, c.req.param("id")));
+eventApp.get('/p', (c) => brandedPostcardNotFound(c));
+eventApp.get('/p/:id/*', (c) => brandedPostcardNotFound(c, c.req.param('id')));
 
 /**
  * Test endpoint: generate an image with Workers AI (FLUX.2 klein 4B).
  * GET /api/test-ai?prompt=...
  * Returns image/png directly so you can preview in browser.
  */
-app.get("/api/test-ai", async (c) => {
+app.get('/api/test-ai', async (c) => {
 	const prompt =
-		c.req.query("prompt") ??
-		"A stylized illustration of a hot dog on a New York City sidewalk with yellow taxis blurred in the background, vibrant cartoon style.";
+		c.req.query('prompt') ??
+		'A stylized illustration of a hot dog on a New York City sidewalk with yellow taxis blurred in the background, vibrant cartoon style.';
 
 	try {
 		const { bytes, contentType, elapsedMs } = await runFlux(c.env.AI, { prompt });
 		return new Response(bytes, {
 			headers: {
-				"content-type": contentType,
-				"content-length": String(bytes.byteLength),
-				"x-elapsed-ms": String(elapsedMs),
-				"x-prompt": prompt,
+				'content-type': contentType,
+				'content-length': String(bytes.byteLength),
+				'x-elapsed-ms': String(elapsedMs),
+				'x-prompt': prompt,
 			},
 		});
 	} catch (err) {
@@ -5220,15 +6249,15 @@ app.get("/api/test-ai", async (c) => {
  * Returns the list of available NYC scenes from KV.
  * GET /api/scenes
  */
-app.get("/api/scenes", async (c) => {
-	const raw = await c.env.CONFIG.get("scenes");
-	if (!raw) return c.json({ error: "scenes not configured" }, 500);
+app.get('/api/scenes', async (c) => {
+	const raw = await c.env.CONFIG.get('scenes');
+	if (!raw) return c.json({ error: 'scenes not configured' }, 500);
 
 	try {
 		const scenes = JSON.parse(raw);
 		return c.json({ count: scenes.length, scenes });
 	} catch (err) {
-		return c.json({ error: "invalid scenes JSON", details: String(err) }, 500);
+		return c.json({ error: 'invalid scenes JSON', details: String(err) }, 500);
 	}
 });
 
@@ -5236,17 +6265,17 @@ app.get("/api/scenes", async (c) => {
  * Test endpoint: insert a row into D1 and read recent rows back.
  * GET /api/test-db
  */
-app.get("/api/test-db", async (c) => {
+app.get('/api/test-db', async (c) => {
 	const id = crypto.randomUUID();
-	const inserted = await c.env.DB.prepare(
-		"INSERT INTO sessions (id, status) VALUES (?, ?) RETURNING id, created_at, status",
-	)
-		.bind(id, "test")
+	const inserted = await c.env.DB.prepare('INSERT INTO sessions (id, status) VALUES (?, ?) RETURNING id, created_at, status')
+		.bind(id, 'test')
 		.first<{ id: string; created_at: number; status: string }>();
 
-	const recent = await c.env.DB.prepare(
-		"SELECT id, created_at, status FROM sessions ORDER BY created_at DESC LIMIT 5",
-	).all<{ id: string; created_at: number; status: string }>();
+	const recent = await c.env.DB.prepare('SELECT id, created_at, status FROM sessions ORDER BY created_at DESC LIMIT 5').all<{
+		id: string;
+		created_at: number;
+		status: string;
+	}>();
 
 	return c.json({
 		ok: true,
@@ -5259,15 +6288,14 @@ app.get("/api/test-db", async (c) => {
  * Test endpoint: uploads a hardcoded tiny PNG to R2.
  * GET /api/test-upload
  */
-app.get("/api/test-upload", async (c) => {
+app.get('/api/test-upload', async (c) => {
 	// 1x1 transparent PNG, base64 encoded
-	const tinyPngBase64 =
-		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+	const tinyPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 	const bytes = Uint8Array.from(atob(tinyPngBase64), (ch) => ch.charCodeAt(0));
 
 	const key = `test/${Date.now()}-tiny.png`;
 	await c.env.BUCKET.put(key, bytes, {
-		httpMetadata: { contentType: "image/png" },
+		httpMetadata: { contentType: 'image/png' },
 	});
 
 	return c.json({ ok: true, key, size: bytes.byteLength });
@@ -5277,7 +6305,7 @@ app.get("/api/test-upload", async (c) => {
  * Test endpoint: lists the most recent R2 objects (for verification).
  * GET /api/test-list
  */
-app.get("/api/test-list", async (c) => {
+app.get('/api/test-list', async (c) => {
 	const listing = await c.env.BUCKET.list({ limit: 10 });
 	return c.json({
 		count: listing.objects.length,
@@ -5294,17 +6322,17 @@ app.get("/api/test-list", async (c) => {
  * Test endpoint: fetches a specific object back from R2 by key.
  * GET /api/test-get?key=...
  */
-app.get("/api/test-get", async (c) => {
-	const key = c.req.query("key");
-	if (!key) return c.json({ error: "missing ?key=" }, 400);
+app.get('/api/test-get', async (c) => {
+	const key = c.req.query('key');
+	if (!key) return c.json({ error: 'missing ?key=' }, 400);
 
 	const obj = await c.env.BUCKET.get(key);
-	if (!obj) return c.json({ error: "not found", key }, 404);
+	if (!obj) return c.json({ error: 'not found', key }, 404);
 
 	return new Response(obj.body, {
 		headers: {
-			"content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
-			"content-length": String(obj.size),
+			'content-type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+			'content-length': String(obj.size),
 		},
 	});
 });
@@ -5313,25 +6341,32 @@ app.get("/api/test-get", async (c) => {
 // Root: event index listing active events
 // ---------------------------------------------------------------------------
 
-app.get("/", async (c) => {
+app.get('/', async (c) => {
 	const events = await listEvents(c.env);
-	const activeEvents = events.filter((e) => e.status === "active");
+	const activeEvents = events.filter((e) => e.status === 'active');
 
 	if (activeEvents.length === 1) {
 		// Single active event — redirect straight to it
 		return c.redirect(`/e/${activeEvents[0].id}`, 302);
 	}
 
-	const cards = activeEvents.length === 0
-		? `<p class="text-white/60 text-center py-12">No active events right now.</p>`
-		: activeEvents.map((e) => `<a href="/e/${escapeAttr(e.id)}" class="block rounded-2xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/30 transition p-6">
+	const cards =
+		activeEvents.length === 0
+			? `<p class="text-white/60 text-center py-12">No active events right now.</p>`
+			: activeEvents
+					.map(
+						(
+							e,
+						) => `<a href="/e/${escapeAttr(e.id)}" class="block rounded-2xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] hover:border-white/30 transition p-6">
 			<div class="text-xl font-bold">${escapeAttr(e.name)}</div>
 			<p class="mt-2 text-sm text-white/60">${escapeAttr(e.tagline)}</p>
-		</a>`).join("\n");
+		</a>`,
+					)
+					.join('\n');
 
 	return c.html(
 		page(
-			"AI Caricature Booth",
+			'AI Caricature Booth',
 			`<main class="max-w-2xl mx-auto px-6 py-16">
 				<h1 class="text-4xl font-bold text-center mb-2">AI Caricature Booth</h1>
 				<p class="text-center text-white/60 mb-12">Pick an event to get started.</p>
@@ -5348,6 +6383,6 @@ app.get("/", async (c) => {
 // Mount event sub-app and legacy redirects
 // ---------------------------------------------------------------------------
 
-app.route("/e/:eventId", eventApp);
+app.route('/e/:eventId', eventApp);
 
 export default app;

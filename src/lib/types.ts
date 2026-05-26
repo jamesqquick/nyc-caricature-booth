@@ -12,12 +12,9 @@ export interface EventRecord {
 	status: "draft" | "active" | "archived";
 
 	// branding
-	wordmark_text: string;
-	wordmark_image_key: string | null;
 	accent_color: string;
 	watermark_image_key: string | null;
-	watermark_fallback_text: string | null;
-	empty_state_emoji: string;
+	watermark_image_key_left: string | null;
 
 	// copy
 	tagline: string;
@@ -31,7 +28,6 @@ export interface EventRecord {
 	// misc
 	timezone: string;
 	privacy_email: string;
-	public_url: string;
 
 	created_at: number;
 	created_by: string | null;
