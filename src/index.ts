@@ -1729,28 +1729,24 @@ app.get('/admin/events/:eventId', async (c) => {
 							</form>
 						</div>
 
-						${
-							ev.watermark_image_key || ev.watermark_image_key_left
-								? `<div>
-								<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Postcard preview</label>
-								<p class="text-xs text-white/40 mb-3">Approximate layout — actual postcard is 1800×1200 px. Drag the sliders above to resize.</p>
-								<div id="postcard-preview" style="position:relative;aspect-ratio:3/2;max-width:640px;overflow:hidden;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background-color:#e5e7eb;background-image:repeating-conic-gradient(#d1d5db 0% 25%,#e5e7eb 0% 50%);background-size:16px 16px;">
-									${
-										ev.watermark_image_key
-											? `<img id="preview-wm-right" src="/api/admin/events/${escapeAttr(ev.id)}/watermark"
-												style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;right:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
-											: ''
-									}
-									${
-										ev.watermark_image_key_left
-											? `<img id="preview-wm-left" src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left"
-												style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;left:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_left_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
-											: ''
-									}
-								</div>
-							</div>`
-								: ''
-						}
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Postcard preview</label>
+							<p class="text-xs text-white/40 mb-3">Approximate layout — actual postcard is 1800×1200 px.${ev.watermark_image_key || ev.watermark_image_key_left ? ' Drag the sliders above to resize.' : ' Upload watermarks above to see them here.'}</p>
+							<div id="postcard-preview" style="position:relative;aspect-ratio:3/2;max-width:640px;overflow:hidden;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background-color:#e5e7eb;background-image:repeating-conic-gradient(#d1d5db 0% 25%,#e5e7eb 0% 50%);background-size:16px 16px;">
+								${
+									ev.watermark_image_key
+										? `<img id="preview-wm-right" src="/api/admin/events/${escapeAttr(ev.id)}/watermark"
+											style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;right:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
+										: ''
+								}
+								${
+									ev.watermark_image_key_left
+										? `<img id="preview-wm-left" src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left"
+											style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;left:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_left_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
+										: ''
+								}
+							</div>
+						</div>
 
 						<form id="branding-form" class="space-y-6">
 							<div>
