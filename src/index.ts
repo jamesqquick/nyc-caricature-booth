@@ -3201,7 +3201,7 @@ eventApp.get('/kiosk/capture', (c) => {
 
 				function stopCamera() {
 					if (stream) {
-						for (const t of stream.getTracks()) t.stop();
+						stream.getTracks().forEach(function (t) { t.stop(); });
 						stream = null;
 					}
 				}
@@ -3399,9 +3399,9 @@ eventApp.get('/kiosk/scene', async (c) => {
 				}
 
 				function lockGrid() {
-					for (const btn of grid.querySelectorAll(".scene-card")) {
+					grid.querySelectorAll(".scene-card").forEach(function (btn) {
 						btn.disabled = true;
-					}
+					});
 				}
 
 				grid.addEventListener("click", function (e) {
@@ -4807,9 +4807,9 @@ app.get('/test-session/:id', (c) => {
 							e.preventDefault();
 							msgEl.textContent = "updating…";
 							const fd = new FormData(formEl);
-							for (const [k, v] of Array.from(fd.entries())) {
-								if (typeof v === "string" && v.trim() === "") fd.delete(k);
-							}
+							Array.from(fd.entries()).forEach(function (pair) {
+								if (typeof pair[1] === "string" && pair[1].trim() === "") fd.delete(pair[0]);
+							});
 							const r = await fetch("/api/test-session/" + id + "/status", {
 								method: "POST",
 								body: fd,
