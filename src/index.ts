@@ -142,7 +142,12 @@ eventApp.get('/', async (c) => {
 	return c.html(
 		page(
 			`${event.name} — AI Caricature Booth`,
-			`<main class="px-6 sm:px-8 pb-20">
+			`<div class="fixed top-4 left-4 z-50 flex flex-col items-center gap-1">
+				<img src="${qrSrc}" alt="QR code — scan to open this page"
+					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
+				<p class="text-[9px] uppercase tracking-[0.18em] text-white/40">Scan me</p>
+			</div>
+			<main class="px-6 sm:px-8 pb-20">
 				<!-- Hero -->
 				<section class="max-w-4xl mx-auto pt-12 sm:pt-20 flex flex-col items-center text-center">
 					<h1 class="text-[clamp(2rem,5vw,3.5rem)] font-bold leading-tight text-balance">
@@ -157,12 +162,6 @@ eventApp.get('/', async (c) => {
 						class="mt-12 inline-flex items-center justify-center rounded-full bg-cf-orange px-10 py-4 text-base font-bold text-black shadow-[0_0_60px_rgba(246,130,31,0.35)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
 						Open the booth
 					</a>
-
-					<div class="mt-10 flex flex-col items-center gap-2">
-						<img src="${qrSrc}" alt="QR code — scan to open this page"
-							class="w-28 sm:w-32 rounded-xl border border-white/10 bg-white p-2" />
-						<p class="text-[10px] uppercase tracking-[0.18em] text-white/40">Scan to open on your phone</p>
-					</div>
 				</section>
 
 				<!-- How it works -->
@@ -3003,10 +3002,18 @@ eventApp.get('/privacy', async (c) => {
 eventApp.get('/kiosk', async (c) => {
 	const { event } = c.get('eventCtx');
 	const basePath = c.get('basePath');
+	const origin = new URL(c.req.url).origin;
+	const eventUrl = `${origin}${basePath}/`;
+	const qrSrc = `${basePath}/api/kiosk/qr?url=${encodeURIComponent(eventUrl)}`;
 	return c.html(
 		kioskPage(
 			`${event.name} — Tap to start`,
-			`<main class="h-full w-full flex flex-col pt-10">
+			`<div class="fixed top-4 left-4 z-50 flex flex-col items-center gap-1">
+				<img src="${qrSrc}" alt="QR code — scan to open this page"
+					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
+				<p class="text-[9px] uppercase tracking-[0.18em] text-white/40">Scan me</p>
+			</div>
+			<main class="h-full w-full flex flex-col pt-10">
 				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
 					<h1 class="text-[clamp(2rem,6vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
@@ -3043,12 +3050,20 @@ eventApp.get('/kiosk', async (c) => {
  */
 eventApp.get('/kiosk/capture', (c) => {
 	const basePath = c.get('basePath');
+	const origin = new URL(c.req.url).origin;
+	const eventUrl = `${origin}${basePath}/`;
+	const qrSrc = `${basePath}/api/kiosk/qr?url=${encodeURIComponent(eventUrl)}`;
 	return c.html(
 		kioskPage(
 			'Capture your selfie',
-			`<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
+			`<div class="fixed top-4 left-4 z-50 flex flex-col items-center gap-1">
+				<img src="${qrSrc}" alt="QR code — scan to open this page"
+					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
+				<p class="text-[9px] uppercase tracking-[0.18em] text-white/40">Scan me</p>
+			</div>
+			<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
+					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white pl-28 sm:pl-32">← Cancel</a>
 					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 1 of 3 · Selfie</span>
 					<span class="w-12"></span>
 				</header>
