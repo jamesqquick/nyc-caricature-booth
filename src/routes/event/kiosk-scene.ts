@@ -90,9 +90,9 @@ app.get('/kiosk/scene', async (c) => {
 				}
 
 				function lockGrid() {
-					for (const btn of grid.querySelectorAll(".scene-card")) {
+					grid.querySelectorAll(".scene-card").forEach(function (btn) {
 						btn.disabled = true;
-					}
+					});
 				}
 
 				grid.addEventListener("click", function (e) {

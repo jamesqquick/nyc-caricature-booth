@@ -142,7 +142,7 @@ app.get('/kiosk/capture', (c) => {
 
 				function stopCamera() {
 					if (stream) {
-						for (const t of stream.getTracks()) t.stop();
+						stream.getTracks().forEach(function (t) { t.stop(); });
 						stream = null;
 					}
 				}
