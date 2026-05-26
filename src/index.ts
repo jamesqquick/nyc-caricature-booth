@@ -1666,73 +1666,77 @@ app.get('/admin/events/:eventId', async (c) => {
 
 				<!-- Tab: Branding -->
 				<section data-panel="branding" class="tab-panel hidden">
-					<div class="space-y-8 max-w-xl">
-						<div>
-							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-right watermark (PNG)</label>
-							<p class="text-xs text-white/40 mb-3">Composited onto the bottom-right corner of every postcard. Nothing is shown if not set.</p>
-							<div id="watermark-preview" class="mb-3">
+					<div class="flex flex-col xl:flex-row xl:items-start gap-8">
+						<!-- Left column: watermark controls -->
+						<div class="space-y-8 max-w-xl flex-shrink-0">
+							<div>
+								<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-right watermark (PNG)</label>
+								<p class="text-xs text-white/40 mb-3">Composited onto the bottom-right corner of every postcard. Nothing is shown if not set.</p>
+								<div id="watermark-preview" class="mb-3">
+									${
+										ev.watermark_image_key
+											? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
+											<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark" alt="watermark" class="h-12" />
+											<button type="button" id="remove-watermark-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										</div>`
+											: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+									}
+								</div>
 								${
 									ev.watermark_image_key
-										? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
-										<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark" alt="watermark" class="h-12" />
-										<button type="button" id="remove-watermark-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										? `<div class="mb-3">
+										<label class="block text-xs text-white/50 mb-1">Width</label>
+										<div class="flex items-center gap-3">
+											<input type="range" id="wm-right-slider" min="100" max="900" step="10" value="${ev.watermark_w ?? 540}"
+												class="w-48 accent-cf-orange" />
+											<span id="wm-right-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_w ?? 540}px · ${Math.round(((ev.watermark_w ?? 540) / 1800) * 100)}%</span>
+										</div>
 									</div>`
-										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+										: ''
 								}
+								<form id="watermark-form" enctype="multipart/form-data" class="flex items-center gap-3">
+									<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
+									<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
+								</form>
 							</div>
-							${
-								ev.watermark_image_key
-									? `<div class="mb-3">
-									<label class="block text-xs text-white/50 mb-1">Width</label>
-									<div class="flex items-center gap-3">
-										<input type="range" id="wm-right-slider" min="100" max="900" step="10" value="${ev.watermark_w ?? 540}"
-											class="w-48 accent-cf-orange" />
-										<span id="wm-right-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_w ?? 540}px · ${Math.round(((ev.watermark_w ?? 540) / 1800) * 100)}%</span>
-									</div>
-								</div>`
-									: ''
-							}
-							<form id="watermark-form" enctype="multipart/form-data" class="flex items-center gap-3">
-								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
-								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
-							</form>
-						</div>
 
-						<div>
-							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-left watermark (PNG)</label>
-							<p class="text-xs text-white/40 mb-3">Composited onto the bottom-left corner of every postcard. Nothing is shown if not set.</p>
-							<div id="watermark-left-preview" class="mb-3">
+							<div>
+								<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-left watermark (PNG)</label>
+								<p class="text-xs text-white/40 mb-3">Composited onto the bottom-left corner of every postcard. Nothing is shown if not set.</p>
+								<div id="watermark-left-preview" class="mb-3">
+									${
+										ev.watermark_image_key_left
+											? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
+											<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left" alt="watermark left" class="h-12" />
+											<button type="button" id="remove-watermark-left-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										</div>`
+											: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+									}
+								</div>
 								${
 									ev.watermark_image_key_left
-										? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
-										<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left" alt="watermark left" class="h-12" />
-										<button type="button" id="remove-watermark-left-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										? `<div class="mb-3">
+										<label class="block text-xs text-white/50 mb-1">Width</label>
+										<div class="flex items-center gap-3">
+											<input type="range" id="wm-left-slider" min="100" max="900" step="10" value="${ev.watermark_left_w ?? 540}"
+												class="w-48 accent-cf-orange" />
+											<span id="wm-left-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_left_w ?? 540}px · ${Math.round(((ev.watermark_left_w ?? 540) / 1800) * 100)}%</span>
+										</div>
 									</div>`
-										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+										: ''
 								}
+								<form id="watermark-left-form" enctype="multipart/form-data" class="flex items-center gap-3">
+									<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
+									<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
+								</form>
 							</div>
-							${
-								ev.watermark_image_key_left
-									? `<div class="mb-3">
-									<label class="block text-xs text-white/50 mb-1">Width</label>
-									<div class="flex items-center gap-3">
-										<input type="range" id="wm-left-slider" min="100" max="900" step="10" value="${ev.watermark_left_w ?? 540}"
-											class="w-48 accent-cf-orange" />
-										<span id="wm-left-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_left_w ?? 540}px · ${Math.round(((ev.watermark_left_w ?? 540) / 1800) * 100)}%</span>
-									</div>
-								</div>`
-									: ''
-							}
-							<form id="watermark-left-form" enctype="multipart/form-data" class="flex items-center gap-3">
-								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
-								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
-							</form>
 						</div>
 
-						<div>
+						<!-- Right column: postcard preview (sticky on xl) -->
+						<div class="xl:sticky xl:top-4 flex-1 min-w-0">
 							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Postcard preview</label>
-							<p class="text-xs text-white/40 mb-3">Approximate layout — actual postcard is 1800×1200 px.${ev.watermark_image_key || ev.watermark_image_key_left ? ' Drag the sliders above to resize.' : ' Upload watermarks above to see them here.'}</p>
-							<div id="postcard-preview" style="position:relative;aspect-ratio:3/2;max-width:640px;overflow:hidden;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background-color:#e5e7eb;background-image:repeating-conic-gradient(#d1d5db 0% 25%,#e5e7eb 0% 50%);background-size:16px 16px;">
+							<p class="text-xs text-white/40 mb-3">Approximate layout — actual postcard is 1800×1200 px.${ev.watermark_image_key || ev.watermark_image_key_left ? ' Drag the sliders to resize.' : ' Upload watermarks to see them here.'}</p>
+							<div id="postcard-preview" style="position:relative;aspect-ratio:3/2;overflow:hidden;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background-color:#e5e7eb;background-image:repeating-conic-gradient(#d1d5db 0% 25%,#e5e7eb 0% 50%);background-size:16px 16px;">
 								${
 									ev.watermark_image_key
 										? `<img id="preview-wm-right" src="/api/admin/events/${escapeAttr(ev.id)}/watermark"
@@ -1747,7 +1751,10 @@ app.get('/admin/events/:eventId', async (c) => {
 								}
 							</div>
 						</div>
+					</div>
 
+					<!-- Accent color: always full width below -->
+					<div class="mt-8 max-w-xl">
 						<form id="branding-form" class="space-y-6">
 							<div>
 								<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Accent color</label>
