@@ -136,6 +136,9 @@ const kioskPage = (title: string, body: string) => `<!doctype html>
 eventApp.get('/', async (c) => {
 	const { event } = c.get('eventCtx');
 	const basePath = c.get('basePath');
+	const origin = new URL(c.req.url).origin;
+	const eventUrl = `${origin}${basePath}/`;
+	const qrSrc = `${basePath}/api/kiosk/qr?url=${encodeURIComponent(eventUrl)}`;
 	return c.html(
 		page(
 			`${event.name} — AI Caricature Booth`,
@@ -154,6 +157,12 @@ eventApp.get('/', async (c) => {
 						class="mt-12 inline-flex items-center justify-center rounded-full bg-cf-orange px-10 py-4 text-base font-bold text-black shadow-[0_0_60px_rgba(246,130,31,0.35)] hover:bg-cf-orange-dark active:scale-[0.98] transition">
 						Open the booth
 					</a>
+
+					<div class="mt-10 flex flex-col items-center gap-2">
+						<img src="${qrSrc}" alt="QR code — scan to open this page"
+							class="w-28 sm:w-32 rounded-xl border border-white/10 bg-white p-2" />
+						<p class="text-[10px] uppercase tracking-[0.18em] text-white/40">Scan to open on your phone</p>
+					</div>
 				</section>
 
 				<!-- How it works -->
