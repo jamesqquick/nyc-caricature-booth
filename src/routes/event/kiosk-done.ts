@@ -110,11 +110,11 @@ app.get('/kiosk/done', (c) => {
 				});
 
 				if (payload && payload.postcardKey) {
-					postcardEl.src = "/api/run-img?key=" + encodeURIComponent(payload.postcardKey);
+					postcardEl.src = basePath + "/api/run-img?key=" + encodeURIComponent(payload.postcardKey);
 					const scenePart = payload.sceneName || payload.sceneId || "";
 					metaEl.textContent = scenePart ? scenePart + " · " + (resolvedSid || "").slice(0, 8) + "…" : "";
 				} else if (resolvedSid) {
-					postcardEl.src = "/api/run-img?key=" + encodeURIComponent("runs/" + resolvedSid + "/postcard.jpg");
+					postcardEl.src = basePath + "/api/run-img?key=" + encodeURIComponent("runs/" + resolvedSid + "/postcard.jpg");
 					metaEl.textContent = "session " + resolvedSid.slice(0, 8) + "…";
 				} else {
 					postcardEl.classList.add("hidden");

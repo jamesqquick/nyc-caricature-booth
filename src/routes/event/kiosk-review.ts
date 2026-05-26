@@ -73,7 +73,7 @@ app.get('/kiosk/review', async (c) => {
 				}
 				if (!data.sceneId) { window.location.replace(basePath + "/kiosk/scene"); return; }
 
-				selfieEl.src = "/api/run-img?key=" + encodeURIComponent(data.selfieKey);
+				selfieEl.src = basePath + "/api/run-img?key=" + encodeURIComponent(data.selfieKey);
 				nameEl.textContent = data.sceneName || data.sceneId;
 				if (data.sceneEmoji) emojiEl.textContent = data.sceneEmoji;
 

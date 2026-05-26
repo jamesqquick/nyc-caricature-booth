@@ -35,7 +35,7 @@ app.get('/gallery', async (c) => {
 		.map((row) => {
 			const sceneName = row.scene_name ?? 'Untitled scene';
 			const age = formatAge(row.completed_at);
-			const imgUrl = `/api/run-img?key=${encodeURIComponent(row.postcard_key)}`;
+			const imgUrl = `${basePath}/api/run-img?key=${encodeURIComponent(row.postcard_key)}`;
 			return `<article class="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 shadow-[0_0_24px_rgba(0,0,0,0.4)]">
 				<div class="aspect-[3/2] w-full overflow-hidden bg-black">
 					<img src="${imgUrl}" alt="${sceneName} postcard" class="h-full w-full object-cover" loading="lazy" />
@@ -105,7 +105,7 @@ app.get('/gallery', async (c) => {
 
 				function buildCard(s) {
 					var name = s.sceneName || "Untitled scene";
-					var imgUrl = "/api/run-img?key=" + encodeURIComponent(s.postcardKey);
+					var imgUrl = basePath + "/api/run-img?key=" + encodeURIComponent(s.postcardKey);
 					return '<article class="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 shadow-[0_0_24px_rgba(0,0,0,0.4)]">'
 						+ '<div class="aspect-[3/2] w-full overflow-hidden bg-black">'
 						+ '<img src="' + imgUrl + '" alt="' + name + ' postcard" class="h-full w-full object-cover" loading="lazy" />'
