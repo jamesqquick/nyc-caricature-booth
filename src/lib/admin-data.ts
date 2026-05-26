@@ -26,6 +26,8 @@ export interface AdminSessionRow {
 	printJobId: string | null;
 	postcardKey: string | null;
 	errorMsg: string | null;
+	/** The event this session belongs to, or null if unassigned. */
+	eventId: string | null;
 }
 
 interface RawSessionRow {
@@ -40,6 +42,7 @@ interface RawSessionRow {
 	error_msg: string | null;
 	print_status: string | null;
 	print_job_id: string | null;
+	event_id: string | null;
 }
 
 /**
@@ -61,6 +64,7 @@ export async function loadAdminSessions(env: Env): Promise<AdminSessionRow[]> {
 			s.email,
 			s.postcard_key,
 			s.error_msg,
+			s.event_id,
 			(SELECT pj.status FROM print_jobs pj
 			   WHERE pj.session_id = s.id
 			   ORDER BY pj.created_at DESC LIMIT 1) AS print_status,
@@ -93,6 +97,7 @@ export async function loadAdminSessions(env: Env): Promise<AdminSessionRow[]> {
 			printJobId: r.print_job_id,
 			postcardKey: r.postcard_key,
 			errorMsg: r.error_msg,
+			eventId: r.event_id,
 		};
 	});
 }
