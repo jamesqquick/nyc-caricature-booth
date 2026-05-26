@@ -1673,6 +1673,18 @@ app.get('/admin/events/:eventId', async (c) => {
 										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
 								}
 							</div>
+							${
+								ev.watermark_image_key
+									? `<div class="mb-3">
+									<label class="block text-xs text-white/50 mb-1">Width</label>
+									<div class="flex items-center gap-3">
+										<input type="range" id="wm-right-slider" min="100" max="900" step="10" value="${ev.watermark_w ?? 540}"
+											class="w-48 accent-cf-orange" />
+										<span id="wm-right-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_w ?? 540}px · ${Math.round(((ev.watermark_w ?? 540) / 1800) * 100)}%</span>
+									</div>
+								</div>`
+									: ''
+							}
 							<form id="watermark-form" enctype="multipart/form-data" class="flex items-center gap-3">
 								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
 								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
@@ -1692,11 +1704,46 @@ app.get('/admin/events/:eventId', async (c) => {
 										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
 								}
 							</div>
+							${
+								ev.watermark_image_key_left
+									? `<div class="mb-3">
+									<label class="block text-xs text-white/50 mb-1">Width</label>
+									<div class="flex items-center gap-3">
+										<input type="range" id="wm-left-slider" min="100" max="900" step="10" value="${ev.watermark_left_w ?? 540}"
+											class="w-48 accent-cf-orange" />
+										<span id="wm-left-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_left_w ?? 540}px · ${Math.round(((ev.watermark_left_w ?? 540) / 1800) * 100)}%</span>
+									</div>
+								</div>`
+									: ''
+							}
 							<form id="watermark-left-form" enctype="multipart/form-data" class="flex items-center gap-3">
 								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
 								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
 							</form>
 						</div>
+
+						${
+							ev.watermark_image_key || ev.watermark_image_key_left
+								? `<div>
+								<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Postcard preview</label>
+								<p class="text-xs text-white/40 mb-3">Approximate layout — actual postcard is 1800×1200 px. Drag the sliders above to resize.</p>
+								<div id="postcard-preview" style="position:relative;aspect-ratio:3/2;max-width:640px;overflow:hidden;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background-color:#e5e7eb;background-image:repeating-conic-gradient(#d1d5db 0% 25%,#e5e7eb 0% 50%);background-size:16px 16px;">
+									${
+										ev.watermark_image_key
+											? `<img id="preview-wm-right" src="/api/admin/events/${escapeAttr(ev.id)}/watermark"
+												style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;right:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
+											: ''
+									}
+									${
+										ev.watermark_image_key_left
+											? `<img id="preview-wm-left" src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left"
+												style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;left:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_left_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
+											: ''
+									}
+								</div>
+							</div>`
+								: ''
+						}
 
 						<form id="branding-form" class="space-y-6">
 							<div>
@@ -1918,6 +1965,43 @@ app.get('/admin/events/:eventId', async (c) => {
 								toast("Left watermark removed");
 								setTimeout(function () { location.reload(); }, 600);
 							}).catch(function (err) { toast(err.message, true); rmWmL.disabled = false; });
+					});
+				}
+
+				// ---- Watermark size sliders + preview ----
+				var POSTCARD_W = 1800;
+				var POSTCARD_H = 1200;
+				var WM_MARGIN = 56;
+				var previewRight = document.getElementById("preview-wm-right");
+				var previewLeft = document.getElementById("preview-wm-left");
+				var wmRightSlider = document.getElementById("wm-right-slider");
+				var wmLeftSlider = document.getElementById("wm-left-slider");
+				var wmRightLabel = document.getElementById("wm-right-label");
+				var wmLeftLabel = document.getElementById("wm-left-label");
+				function wmLabel(px) {
+					return px + "px \u00B7 " + Math.round((px / POSTCARD_W) * 100) + "%";
+				}
+
+				if (wmRightSlider) {
+					wmRightSlider.addEventListener("input", function () {
+						var v = Number(wmRightSlider.value);
+						if (wmRightLabel) wmRightLabel.textContent = wmLabel(v);
+						if (previewRight) previewRight.style.width = ((v / POSTCARD_W) * 100).toFixed(2) + "%";
+					});
+					wmRightSlider.addEventListener("change", function () {
+						saveFields({ watermark_w: Number(wmRightSlider.value) })
+							.catch(function (err) { toast(err.message, true); });
+					});
+				}
+				if (wmLeftSlider) {
+					wmLeftSlider.addEventListener("input", function () {
+						var v = Number(wmLeftSlider.value);
+						if (wmLeftLabel) wmLeftLabel.textContent = wmLabel(v);
+						if (previewLeft) previewLeft.style.width = ((v / POSTCARD_W) * 100).toFixed(2) + "%";
+					});
+					wmLeftSlider.addEventListener("change", function () {
+						saveFields({ watermark_left_w: Number(wmLeftSlider.value) })
+							.catch(function (err) { toast(err.message, true); });
 					});
 				}
 
@@ -2189,6 +2273,8 @@ app.put('/api/admin/events/:eventId', async (c) => {
 		'name',
 		'status',
 		'accent_color',
+		'watermark_w',
+		'watermark_left_w',
 		'tagline',
 		'kiosk_idle_subhead',
 		'scene_picker_heading',
@@ -2205,6 +2291,12 @@ app.put('/api/admin/events/:eventId', async (c) => {
 		if (key === 'id') continue; // handled separately below
 		if (key === 'status' && !['draft', 'active', 'archived'].includes(val)) {
 			return c.json({ error: 'Invalid status' }, 400);
+		}
+		if ((key === 'watermark_w' || key === 'watermark_left_w') && val !== null) {
+			const n = Number(val);
+			if (!Number.isInteger(n) || n < 100 || n > 900) {
+				return c.json({ error: `${key} must be an integer between 100 and 900, or null` }, 400);
+			}
 		}
 		sets.push(`${key} = ?`);
 		vals.push(val === '' ? null : val);
