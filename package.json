@@ -6,6 +6,7 @@
 		"dev": "concurrently -n css,wrangler -c yellow,blue \"npm:dev:css\" \"npm:dev:wrangler\"",
 		"dev:css": "tailwindcss -i ./src/styles/app.css -o ./public/app.css --watch",
 		"dev:wrangler": "wrangler dev",
+		"build": "tailwindcss -i ./src/styles/app.css -o ./public/app.css --minify",
 		"build:css": "tailwindcss -i ./src/styles/app.css -o ./public/app.css --minify",
 		"start": "wrangler dev",
 		"deploy": "npm run build:css && wrangler deploy",
