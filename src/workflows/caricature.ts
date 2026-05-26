@@ -7,7 +7,6 @@ import {
 import { moderateImage, type ModerationVerdict } from "../lib/moderation";
 import { runReplicate } from "../lib/replicate";
 import { loadEventContext } from "../lib/event-ctx";
-import { findScene } from "../lib/scenes";
 import { buildPostcard } from "../lib/postcard";
 import { trackEvent } from "../lib/analytics";
 import type {
@@ -172,7 +171,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				}
 				const eventCtx = await loadEventContext(this.env, eventId);
 				if (!eventCtx) throw new Error(`event not found or inactive: ${eventId}`);
-				const scene = findScene(eventCtx.scenes, sceneId);
+				const scene = eventCtx.scenes.find((s) => s.id === sceneId);
 				if (!scene) throw new Error(`unknown scene_id: ${sceneId} for event ${eventId}`);
 
 				// Compose the final prompt: event-level preamble + scene-specific
