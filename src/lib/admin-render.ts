@@ -158,7 +158,7 @@ export function renderAdminRowActions(r: AdminSessionRow): string {
 
 export function renderAdminTableBody(rows: AdminSessionRow[]): string {
 	if (rows.length === 0) {
-		return `<tr><td colspan="8" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>`;
+		return `<tr><td colspan="9" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>`;
 	}
 	return rows
 		.map((r) => {
@@ -168,6 +168,7 @@ export function renderAdminTableBody(rows: AdminSessionRow[]): string {
 			return (
 				`<tr class="hover:bg-white/[0.03]">` +
 				`<td class="px-4 py-3 font-mono text-xs text-white/80">${escapeHtml(shortId)}</td>` +
+				`<td class="px-4 py-3 text-white/60 text-xs">${escapeHtml(r.eventId ?? '—')}</td>` +
 				`<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ${adminStatusClass(status)}">${escapeHtml(status)}</span></td>` +
 				`<td class="px-4 py-3 text-white/80">${escapeHtml(r.sceneName ?? '—')}</td>` +
 				`<td class="px-4 py-3 text-white/60 whitespace-nowrap">${adminTimeTag(r.createdAt)}</td>` +

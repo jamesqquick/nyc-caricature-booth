@@ -75,6 +75,7 @@ app.get('/admin', async (c) => {
 							<thead class="bg-white/5 text-left text-[11px] uppercase tracking-widest text-white/50">
 								<tr>
 									<th class="px-4 py-3 font-medium">Session</th>
+									<th class="px-4 py-3 font-medium">Event</th>
 									<th class="px-4 py-3 font-medium">Status</th>
 									<th class="px-4 py-3 font-medium">Scene</th>
 									<th class="px-4 py-3 font-medium">Created</th>
@@ -189,6 +190,7 @@ app.get('/admin', async (c) => {
 					return ''
 						+ '<tr class="hover:bg-white/[0.03]">'
 						+ '<td class="px-4 py-3 font-mono text-xs text-white/80">' + escapeHtml(shortId) + '</td>'
+						+ '<td class="px-4 py-3 text-white/60 text-xs">' + escapeHtml(r.eventId || "—") + '</td>'
 						+ '<td class="px-4 py-3"><span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1 ' + statusClass(status) + '">' + escapeHtml(status) + '</span></td>'
 						+ '<td class="px-4 py-3 text-white/80">' + escapeHtml(r.sceneName || "—") + '</td>'
 						+ '<td class="px-4 py-3 text-white/60 whitespace-nowrap">' + renderTimeTag(r.createdAt) + '</td>'
@@ -242,7 +244,7 @@ app.get('/admin', async (c) => {
 
 				function renderSessions(sessions) {
 					if (sessions.length === 0) {
-						tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>';
+						tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-white/40">No sessions yet.</td></tr>';
 					} else {
 						tbody.innerHTML = sessions.map(renderRow).join("");
 					}
