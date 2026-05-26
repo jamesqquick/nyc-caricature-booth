@@ -142,13 +142,13 @@ eventApp.get('/', async (c) => {
 	return c.html(
 		page(
 			`${event.name} — AI Caricature Booth`,
-			`			<div class="fixed top-4 left-4 z-50">
+			`			<div class="flex justify-center pt-4 sm:fixed sm:top-4 sm:left-4 sm:z-50 sm:pt-0 sm:block">
 				<img src="${qrSrc}" alt="QR code — scan to open this page"
 					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
 			</div>
 			<main class="px-6 sm:px-8 pb-20">
 				<!-- Hero -->
-				<section class="max-w-4xl mx-auto pt-12 sm:pt-20 flex flex-col items-center text-center">
+				<section class="max-w-4xl mx-auto pt-6 sm:pt-20 flex flex-col items-center text-center">
 					<h1 class="text-[clamp(2rem,5vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
 					</h1>
@@ -3007,11 +3007,11 @@ eventApp.get('/kiosk', async (c) => {
 	return c.html(
 		kioskPage(
 			`${event.name} — Tap to start`,
-			`			<div class="fixed top-4 left-4 z-50">
+			`			<div class="flex justify-center pt-4 sm:fixed sm:top-4 sm:left-4 sm:z-50 sm:pt-0 sm:block">
 				<img src="${qrSrc}" alt="QR code — scan to open this page"
 					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
 			</div>
-			<main class="h-full w-full flex flex-col pt-10">
+			<main class="h-full w-full flex flex-col pt-4 sm:pt-10">
 				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
 					<h1 class="text-[clamp(2rem,6vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
@@ -3054,13 +3054,13 @@ eventApp.get('/kiosk/capture', (c) => {
 	return c.html(
 		kioskPage(
 			'Capture your selfie',
-			`			<div class="fixed top-4 left-4 z-50">
+			`			<div class="flex justify-center pt-4 sm:fixed sm:top-4 sm:left-4 sm:z-50 sm:pt-0 sm:block">
 				<img src="${qrSrc}" alt="QR code — scan to open this page"
 					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
 			</div>
 			<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white pl-28 sm:pl-32">← Cancel</a>
+					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white sm:pl-32">← Cancel</a>
 					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 1 of 3 · Selfie</span>
 					<span class="w-12"></span>
 				</header>
