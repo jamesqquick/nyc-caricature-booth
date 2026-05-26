@@ -15,6 +15,8 @@ export interface EventRecord {
 	accent_color: string;
 	watermark_image_key: string | null;
 	watermark_image_key_left: string | null;
+	watermark_w: number | null; // px width for bottom-right watermark (null → default 540)
+	watermark_left_w: number | null; // px width for bottom-left watermark (null → default 540)
 
 	// copy
 	tagline: string;

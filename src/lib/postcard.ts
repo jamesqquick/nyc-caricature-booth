@@ -240,12 +240,16 @@ export async function buildPostcard(
 		}
 	}
 
+	// Per-event watermark widths, falling back to the default constant
+	const wmW = opts.event?.watermark_w ?? POSTCARD_WATERMARK_W;
+	const wmLeftW = opts.event?.watermark_left_w ?? POSTCARD_WATERMARK_W;
+
 	// Bottom-right watermark (only if uploaded)
 	if (watermarkBytes) {
 		const watermarkStream = new Response(watermarkBytes).body;
 		if (watermarkStream) {
 			pipeline = pipeline.draw(
-				env.IMAGES.input(watermarkStream).transform({ width: POSTCARD_WATERMARK_W }),
+				env.IMAGES.input(watermarkStream).transform({ width: wmW }),
 				{
 					bottom: POSTCARD_WATERMARK_MARGIN,
 					right: POSTCARD_WATERMARK_MARGIN,
@@ -260,7 +264,7 @@ export async function buildPostcard(
 		const watermarkLeftStream = new Response(watermarkLeftBytes).body;
 		if (watermarkLeftStream) {
 			pipeline = pipeline.draw(
-				env.IMAGES.input(watermarkLeftStream).transform({ width: POSTCARD_WATERMARK_W }),
+				env.IMAGES.input(watermarkLeftStream).transform({ width: wmLeftW }),
 				{
 					bottom: POSTCARD_WATERMARK_MARGIN,
 					left: POSTCARD_WATERMARK_MARGIN,

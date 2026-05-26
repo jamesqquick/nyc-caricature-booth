@@ -136,12 +136,19 @@ const kioskPage = (title: string, body: string) => `<!doctype html>
 eventApp.get('/', async (c) => {
 	const { event } = c.get('eventCtx');
 	const basePath = c.get('basePath');
+	const origin = new URL(c.req.url).origin;
+	const eventUrl = `${origin}${basePath}/`;
+	const qrSrc = `${basePath}/api/kiosk/qr?url=${encodeURIComponent(eventUrl)}`;
 	return c.html(
 		page(
 			`${event.name} — AI Caricature Booth`,
-			`<main class="px-6 sm:px-8 pb-20">
+			`			<div class="flex justify-center pt-4 sm:fixed sm:top-4 sm:left-4 sm:z-50 sm:pt-0 sm:block">
+				<img src="${qrSrc}" alt="QR code — scan to open this page"
+					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
+			</div>
+			<main class="px-6 sm:px-8 pb-20">
 				<!-- Hero -->
-				<section class="max-w-4xl mx-auto pt-12 sm:pt-20 flex flex-col items-center text-center">
+				<section class="max-w-4xl mx-auto pt-6 sm:pt-20 flex flex-col items-center text-center">
 					<h1 class="text-[clamp(2rem,5vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
 					</h1>
@@ -1659,56 +1666,103 @@ app.get('/admin/events/:eventId', async (c) => {
 
 				<!-- Tab: Branding -->
 				<section data-panel="branding" class="tab-panel hidden">
-					<div class="space-y-8 max-w-xl">
-						<div>
-							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-right watermark (PNG)</label>
-							<p class="text-xs text-white/40 mb-3">Composited onto the bottom-right corner of every postcard. Nothing is shown if not set.</p>
-							<div id="watermark-preview" class="mb-3">
+					<div class="flex flex-col xl:flex-row xl:items-start gap-8">
+						<!-- Left column: watermark controls -->
+						<div class="space-y-8 xl:w-1/2">
+							<div>
+								<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-right watermark (PNG)</label>
+								<p class="text-xs text-white/40 mb-3">Composited onto the bottom-right corner of every postcard. Nothing is shown if not set.</p>
+								<div id="watermark-preview" class="mb-3">
+									${
+										ev.watermark_image_key
+											? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
+											<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark" alt="watermark" class="h-12" />
+											<button type="button" id="remove-watermark-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										</div>`
+											: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+									}
+								</div>
 								${
 									ev.watermark_image_key
-										? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
-										<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark" alt="watermark" class="h-12" />
-										<button type="button" id="remove-watermark-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										? `<div class="mb-3">
+										<label class="block text-xs text-white/50 mb-1">Width</label>
+										<div class="flex items-center gap-3">
+											<input type="range" id="wm-right-slider" min="100" max="900" step="10" value="${ev.watermark_w ?? 540}"
+												class="w-48 accent-cf-orange" />
+											<span id="wm-right-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_w ?? 540}px · ${Math.round(((ev.watermark_w ?? 540) / 1800) * 100)}%</span>
+										</div>
 									</div>`
-										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+										: ''
 								}
+								<form id="watermark-form" enctype="multipart/form-data" class="flex items-center gap-3">
+									<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
+									<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
+								</form>
 							</div>
-							<form id="watermark-form" enctype="multipart/form-data" class="flex items-center gap-3">
-								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
-								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
-							</form>
-						</div>
 
-						<div>
-							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-left watermark (PNG)</label>
-							<p class="text-xs text-white/40 mb-3">Composited onto the bottom-left corner of every postcard. Nothing is shown if not set.</p>
-							<div id="watermark-left-preview" class="mb-3">
+							<div>
+								<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Bottom-left watermark (PNG)</label>
+								<p class="text-xs text-white/40 mb-3">Composited onto the bottom-left corner of every postcard. Nothing is shown if not set.</p>
+								<div id="watermark-left-preview" class="mb-3">
+									${
+										ev.watermark_image_key_left
+											? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
+											<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left" alt="watermark left" class="h-12" />
+											<button type="button" id="remove-watermark-left-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										</div>`
+											: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+									}
+								</div>
 								${
 									ev.watermark_image_key_left
-										? `<div class="inline-flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 p-3">
-										<img src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left" alt="watermark left" class="h-12" />
-										<button type="button" id="remove-watermark-left-btn" class="text-xs text-red-400 hover:text-red-300 underline">Remove</button>
+										? `<div class="mb-3">
+										<label class="block text-xs text-white/50 mb-1">Width</label>
+										<div class="flex items-center gap-3">
+											<input type="range" id="wm-left-slider" min="100" max="900" step="10" value="${ev.watermark_left_w ?? 540}"
+												class="w-48 accent-cf-orange" />
+											<span id="wm-left-label" class="text-xs text-white/60 font-mono w-36">${ev.watermark_left_w ?? 540}px · ${Math.round(((ev.watermark_left_w ?? 540) / 1800) * 100)}%</span>
+										</div>
 									</div>`
-										: `<p class="text-xs text-white/40 italic">No watermark set.</p>`
+										: ''
 								}
+								<form id="watermark-left-form" enctype="multipart/form-data" class="flex items-center gap-3">
+									<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
+									<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
+								</form>
 							</div>
-							<form id="watermark-left-form" enctype="multipart/form-data" class="flex items-center gap-3">
-								<input type="file" name="file" accept="image/png" class="text-xs text-white/60 file:rounded-full file:border-0 file:bg-white/10 file:px-4 file:py-2 file:text-xs file:text-white/80 file:cursor-pointer hover:file:bg-white/15" />
-								<button type="submit" class="rounded-full bg-cf-orange px-4 py-2 text-xs font-semibold text-black hover:bg-cf-orange-dark transition">Upload</button>
-							</form>
 						</div>
 
-						<form id="branding-form" class="space-y-6">
-							<div>
-								<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Accent color</label>
-								<div class="flex items-center gap-3">
-									<input name="accent_color" type="text" value="${escapeAttr(ev.accent_color)}" placeholder="#f6821f"
-										class="w-40 rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white font-mono focus:border-cf-orange/50 focus:outline-none" />
-									<div id="color-swatch" class="size-10 rounded-lg border border-white/10" style="background:${escapeAttr(ev.accent_color)}"></div>
-								</div>
+						<!-- Right column: postcard preview (sticky on xl) -->
+						<div class="xl:sticky xl:top-4 xl:w-1/2 min-w-0">
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-2">Postcard preview</label>
+							<p class="text-xs text-white/40 mb-3">Approximate layout — actual postcard is 1800×1200 px.${ev.watermark_image_key || ev.watermark_image_key_left ? ' Drag the sliders to resize.' : ' Upload watermarks to see them here.'}</p>
+							<div id="postcard-preview" style="position:relative;aspect-ratio:3/2;overflow:hidden;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);background-color:#e5e7eb;background-image:repeating-conic-gradient(#d1d5db 0% 25%,#e5e7eb 0% 50%);background-size:16px 16px;">
+								${
+									ev.watermark_image_key
+										? `<img id="preview-wm-right" src="/api/admin/events/${escapeAttr(ev.id)}/watermark"
+											style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;right:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
+										: ''
+								}
+								${
+									ev.watermark_image_key_left
+										? `<img id="preview-wm-left" src="/api/admin/events/${escapeAttr(ev.id)}/watermark-left"
+											style="position:absolute;bottom:${((56 / 1200) * 100).toFixed(2)}%;left:${((56 / 1800) * 100).toFixed(2)}%;width:${(((ev.watermark_left_w ?? 540) / 1800) * 100).toFixed(2)}%;opacity:0.95;" />`
+										: ''
+								}
 							</div>
-							<button type="submit" class="rounded-full bg-cf-orange px-6 py-2.5 text-sm font-semibold text-black hover:bg-cf-orange-dark transition">Save branding</button>
-						</form>
+						</div>
+					</div>
+
+					<!-- Accent color: always full width below -->
+					<div class="mt-8 max-w-xl">
+						<div>
+							<label class="block text-xs uppercase tracking-widest text-white/50 mb-1">Accent color</label>
+							<div class="flex items-center gap-3">
+								<input id="accent-color-input" name="accent_color" type="text" value="${escapeAttr(ev.accent_color)}" placeholder="#f6821f"
+									class="w-40 rounded-lg bg-white/5 border border-white/10 px-4 py-3 text-sm text-white font-mono focus:border-cf-orange/50 focus:outline-none" />
+								<div id="color-swatch" class="size-10 rounded-lg border border-white/10" style="background:${escapeAttr(ev.accent_color)}"></div>
+							</div>
+						</div>
 					</div>
 				</section>
 
@@ -1843,20 +1897,15 @@ app.get('/admin/events/:eventId', async (c) => {
 					});
 				}
 
-				// ---- Branding form ----
-				document.getElementById("branding-form").addEventListener("submit", function (e) {
-					e.preventDefault();
-					var f = e.target;
-					saveFields({
-						accent_color: f.querySelector('[name="accent_color"]').value,
-					}).catch(function (err) { toast(err.message, true); });
-				});
-
-				// Color swatch live preview
-				var accentInput = document.querySelector('[name="accent_color"]');
+				// ---- Accent color: live swatch + auto-save on blur ----
+				var accentInput = document.getElementById("accent-color-input");
 				var swatch = document.getElementById("color-swatch");
 				if (accentInput && swatch) {
 					accentInput.addEventListener("input", function () { swatch.style.background = accentInput.value; });
+					accentInput.addEventListener("change", function () {
+						saveFields({ accent_color: accentInput.value })
+							.catch(function (err) { toast(err.message, true); });
+					});
 				}
 
 				// ---- Watermark upload (right) ----
@@ -1918,6 +1967,43 @@ app.get('/admin/events/:eventId', async (c) => {
 								toast("Left watermark removed");
 								setTimeout(function () { location.reload(); }, 600);
 							}).catch(function (err) { toast(err.message, true); rmWmL.disabled = false; });
+					});
+				}
+
+				// ---- Watermark size sliders + preview ----
+				var POSTCARD_W = 1800;
+				var POSTCARD_H = 1200;
+				var WM_MARGIN = 56;
+				var previewRight = document.getElementById("preview-wm-right");
+				var previewLeft = document.getElementById("preview-wm-left");
+				var wmRightSlider = document.getElementById("wm-right-slider");
+				var wmLeftSlider = document.getElementById("wm-left-slider");
+				var wmRightLabel = document.getElementById("wm-right-label");
+				var wmLeftLabel = document.getElementById("wm-left-label");
+				function wmLabel(px) {
+					return px + "px \u00B7 " + Math.round((px / POSTCARD_W) * 100) + "%";
+				}
+
+				if (wmRightSlider) {
+					wmRightSlider.addEventListener("input", function () {
+						var v = Number(wmRightSlider.value);
+						if (wmRightLabel) wmRightLabel.textContent = wmLabel(v);
+						if (previewRight) previewRight.style.width = ((v / POSTCARD_W) * 100).toFixed(2) + "%";
+					});
+					wmRightSlider.addEventListener("change", function () {
+						saveFields({ watermark_w: Number(wmRightSlider.value) })
+							.catch(function (err) { toast(err.message, true); });
+					});
+				}
+				if (wmLeftSlider) {
+					wmLeftSlider.addEventListener("input", function () {
+						var v = Number(wmLeftSlider.value);
+						if (wmLeftLabel) wmLeftLabel.textContent = wmLabel(v);
+						if (previewLeft) previewLeft.style.width = ((v / POSTCARD_W) * 100).toFixed(2) + "%";
+					});
+					wmLeftSlider.addEventListener("change", function () {
+						saveFields({ watermark_left_w: Number(wmLeftSlider.value) })
+							.catch(function (err) { toast(err.message, true); });
 					});
 				}
 
@@ -2189,6 +2275,8 @@ app.put('/api/admin/events/:eventId', async (c) => {
 		'name',
 		'status',
 		'accent_color',
+		'watermark_w',
+		'watermark_left_w',
 		'tagline',
 		'kiosk_idle_subhead',
 		'scene_picker_heading',
@@ -2205,6 +2293,12 @@ app.put('/api/admin/events/:eventId', async (c) => {
 		if (key === 'id') continue; // handled separately below
 		if (key === 'status' && !['draft', 'active', 'archived'].includes(val)) {
 			return c.json({ error: 'Invalid status' }, 400);
+		}
+		if ((key === 'watermark_w' || key === 'watermark_left_w') && val !== null) {
+			const n = Number(val);
+			if (!Number.isInteger(n) || n < 100 || n > 900) {
+				return c.json({ error: `${key} must be an integer between 100 and 900, or null` }, 400);
+			}
 		}
 		sets.push(`${key} = ?`);
 		vals.push(val === '' ? null : val);
@@ -2902,10 +2996,17 @@ eventApp.get('/privacy', async (c) => {
 eventApp.get('/kiosk', async (c) => {
 	const { event } = c.get('eventCtx');
 	const basePath = c.get('basePath');
+	const origin = new URL(c.req.url).origin;
+	const eventUrl = `${origin}${basePath}/`;
+	const qrSrc = `${basePath}/api/kiosk/qr?url=${encodeURIComponent(eventUrl)}`;
 	return c.html(
 		kioskPage(
 			`${event.name} — Tap to start`,
-			`<main class="h-full w-full flex flex-col pt-10">
+			`			<div class="flex justify-center pt-4 sm:fixed sm:top-4 sm:left-4 sm:z-50 sm:pt-0 sm:block">
+				<img src="${qrSrc}" alt="QR code — scan to open this page"
+					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
+			</div>
+			<main class="h-full w-full flex flex-col pt-4 sm:pt-10">
 				<section class="flex-1 flex flex-col items-center justify-center px-8 text-center">
 					<h1 class="text-[clamp(2rem,6vw,3.5rem)] font-bold leading-tight text-balance">
 						AI Caricature Booth
@@ -2942,12 +3043,19 @@ eventApp.get('/kiosk', async (c) => {
  */
 eventApp.get('/kiosk/capture', (c) => {
 	const basePath = c.get('basePath');
+	const origin = new URL(c.req.url).origin;
+	const eventUrl = `${origin}${basePath}/`;
+	const qrSrc = `${basePath}/api/kiosk/qr?url=${encodeURIComponent(eventUrl)}`;
 	return c.html(
 		kioskPage(
 			'Capture your selfie',
-			`<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
+			`			<div class="flex justify-center pt-4 sm:fixed sm:top-4 sm:left-4 sm:z-50 sm:pt-0 sm:block">
+				<img src="${qrSrc}" alt="QR code — scan to open this page"
+					class="w-20 sm:w-24 rounded-xl border border-white/10 bg-white p-1.5" />
+			</div>
+			<main id="capture-root" class="min-h-[100dvh] h-[100dvh] w-full flex flex-col">
 				<header class="shrink-0 px-6 pt-4 sm:pt-8 pb-2 flex items-center justify-between">
-					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white">← Cancel</a>
+					<a href="${basePath}/kiosk" class="text-sm text-white/50 hover:text-white sm:pl-32">← Cancel</a>
 					<span class="text-xs uppercase tracking-[0.25em] text-white/40 hidden sm:inline">Step 1 of 3 · Selfie</span>
 					<span class="w-12"></span>
 				</header>
