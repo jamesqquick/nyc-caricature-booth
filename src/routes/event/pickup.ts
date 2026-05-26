@@ -2,8 +2,7 @@ import { Hono } from 'hono';
 import type { EventEnv } from '../../lib/types';
 import { page, escapeAttr } from '../../lib/html';
 import { brandedPostcardNotFound, UUID_RE } from '../../lib/helpers';
-import { sendPostcardEmail } from '../../lib/email';
-import { trackEvent } from '../../lib/analytics';
+
 
 const app = new Hono<EventEnv>();
 
@@ -172,47 +171,6 @@ app.get('/p/:id', async (c) => {
 						</button>
 					</div>
 
-					<section id="email-slot" class="rounded-2xl border border-white/10 bg-white/[0.03] p-6 sm:p-8">
-						${
-							row.email
-								? `<div class="flex flex-col items-center gap-2 text-center">
-									<div class="flex items-center gap-2 text-cf-orange text-sm font-medium">
-										<svg class="size-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-											<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-										</svg>
-										<span>Email saved</span>
-									</div>
-									<p class="text-white/50 text-sm">
-										We'll send your postcard to <span class="text-white/80 font-medium">${row.email}</span> once email delivery is wired up.
-									</p>
-								</div>`
-								: `<div class="text-center mb-4">
-									<h2 class="text-lg font-semibold text-white/90 mb-1">Get a digital copy emailed to you</h2>
-									<p class="text-sm text-white/50">We'll send your high-res postcard — no spam, just the one email.</p>
-								</div>
-								<form id="email-form" class="flex flex-col sm:flex-row gap-3 max-w-lg mx-auto">
-									<input id="email-input" type="email" name="email" required
-										placeholder="you@example.com"
-										autocomplete="email" autocapitalize="none" inputmode="email"
-										class="flex-1 rounded-full bg-white/10 border border-white/15 px-5 py-3 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-cf-orange focus:ring-1 focus:ring-cf-orange/50" />
-									<button id="email-submit" type="submit"
-										class="inline-flex items-center justify-center gap-2 rounded-full bg-cf-orange px-6 py-3 text-sm font-bold text-black hover:bg-cf-orange-dark active:scale-[0.98] transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
-										<span data-label="idle">Send me a copy</span>
-										<span data-label="loading" class="hidden items-center gap-2">
-											<svg class="size-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-												<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.3" stroke-width="3" />
-												<path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
-											</svg>
-											<span>Saving…</span>
-										</span>
-										<span data-label="done" class="hidden items-center gap-2"><span>✓ Saved</span></span>
-									</button>
-								</form>
-								<p id="email-error" class="hidden text-sm text-red-400 text-center mt-2"></p>
-								<p id="email-success" class="hidden text-sm text-cf-orange text-center mt-3"></p>`
-						}
-					</section>
-
 					<footer class="mt-12 flex flex-col items-center gap-2">
 						<div class="flex items-center gap-2 text-xs text-white/40">
 							<span>Built end-to-end on</span>
@@ -244,116 +202,10 @@ app.get('/p/:id', async (c) => {
 					});
 				}
 
-				var emailForm = document.getElementById("email-form");
-				if (emailForm) {
-					var emailInput = document.getElementById("email-input");
-					var emailBtn   = document.getElementById("email-submit");
-					var emailError = document.getElementById("email-error");
-					var emailOk    = document.getElementById("email-success");
-					var sessionId  = ${JSON.stringify(id)};
-
-					function setEmailState(state) {
-						var labels = emailBtn.querySelectorAll("[data-label]");
-						labels.forEach(function (el) {
-							var match = el.getAttribute("data-label") === state;
-							el.classList.toggle("hidden", !match);
-							el.classList.toggle("inline-flex", match);
-						});
-					}
-
-					emailForm.addEventListener("submit", async function (e) {
-						e.preventDefault();
-						var email = (emailInput.value || "").trim().toLowerCase();
-						if (!email) return;
-						emailError.classList.add("hidden");
-						emailOk.classList.add("hidden");
-						emailBtn.disabled = true;
-						emailInput.disabled = true;
-						setEmailState("loading");
-						try {
-							var res = await fetch(basePath + "/api/p/" + encodeURIComponent(sessionId) + "/email", {
-								method: "POST",
-								headers: { "content-type": "application/json" },
-								body: JSON.stringify({ email: email }),
-							});
-							var data = await res.json().catch(function () { return {}; });
-							if (!res.ok || !data.ok) throw new Error(data.error || "request failed (" + res.status + ")");
-							setEmailState("done");
-							emailOk.textContent = "We'll send your postcard to " + email;
-							emailOk.classList.remove("hidden");
-						} catch (err) {
-							console.warn("email submit failed:", err);
-							setEmailState("idle");
-							emailBtn.disabled = false;
-							emailInput.disabled = false;
-							emailError.textContent = err.message || "Something went wrong. Try again.";
-							emailError.classList.remove("hidden");
-						}
-					});
-				}
 			})();
 			</script>`,
 		),
 	);
-});
-
-/**
- * Saves the attendee's email and fires the postcard email.
- * POST /api/p/:id/email  body: { email }
- */
-app.post('/api/p/:id/email', async (c) => {
-	const id = c.req.param('id');
-	if (!UUID_RE.test(id)) {
-		return c.json({ error: 'invalid session id' }, 400);
-	}
-
-	let body: { email?: unknown };
-	try {
-		body = await c.req.json();
-	} catch (err) {
-		return c.json({ error: 'expected JSON body { email }', details: String(err) }, 400);
-	}
-
-	const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
-	if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-		return c.json({ error: 'invalid email address' }, 400);
-	}
-	if (email.length > 320) {
-		return c.json({ error: 'email address too long' }, 400);
-	}
-
-	const session = await c.env.DB.prepare('SELECT id, status, postcard_key, scene_name FROM sessions WHERE id = ?')
-		.bind(id)
-		.first<{ id: string; status: string | null; postcard_key: string | null; scene_name: string | null }>();
-
-	if (!session) return c.json({ error: 'session not found' }, 404);
-	if (session.status !== 'completed' || !session.postcard_key) {
-		return c.json({ error: 'session is not completed' }, 409);
-	}
-
-	await c.env.DB.prepare('UPDATE sessions SET email = ?, email_submitted_at = unixepoch() WHERE id = ?').bind(email, id).run();
-
-	console.log(`[email-optin] session=${id} email=${email.slice(0, 3)}***`);
-	trackEvent(c.env.ANALYTICS, 'email.captured', id);
-
-	const origin = new URL(c.req.url).origin;
-	const basePath = c.get('basePath');
-	const postcardKey = session.postcard_key;
-	const sceneName = session.scene_name ?? 'Scene';
-	c.executionCtx.waitUntil(
-		sendPostcardEmail(c.env, {
-			to: email,
-			sessionId: id,
-			sceneName,
-			pickupUrl: `${origin}${basePath}/p/${id}`,
-			postcardImageUrl: `${origin}${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}`,
-			downloadUrl: `${origin}${basePath}/api/run-img?key=${encodeURIComponent(postcardKey)}&download=1`,
-		}).catch((err) => {
-			console.error(`[email-optin] send failed session=${id} err=${err}`);
-		}),
-	);
-
-	return c.json({ ok: true, email });
 });
 
 /** Branded 404 fallbacks for bare /p and extra path segments. */

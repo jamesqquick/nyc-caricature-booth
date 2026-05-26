@@ -62,7 +62,7 @@ app.get('/', async (c) => {
 							<div class="text-cf-orange font-mono text-xs tracking-widest">STEP 03</div>
 							<div class="mt-3 text-lg font-semibold">Take home a postcard</div>
 							<p class="mt-2 text-sm text-white/60">
-								We print it on the spot. Optionally email yourself a digital copy.
+								We print it on the spot and give you a digital copy.
 							</p>
 						</li>
 					</ol>
