@@ -1,11 +1,11 @@
-# NYC Caricature Booth
+# Caricature Booth
 
-An AI-powered photo booth built entirely on Cloudflare, demoed at NY Tech Week 2026. Attendees take a selfie, pick an iconic NYC scene, and get a hand-drawn ink caricature printed on a physical 4×6 postcard — in about 30–90 seconds.
+An AI-powered photo booth built entirely on Cloudflare. Attendees take a selfie, pick a scene, and get a hand-drawn ink caricature printed on a physical 4×6 postcard — in about 30–90 seconds.
 
 ## What it does
 
 1. An iPad kiosk opens the camera — the attendee takes a selfie
-2. They pick one of 6 NYC scenes (Brooklyn Bridge, Hot Dog Stand, etc.)
+2. They pick from a set of configurable scenes
 3. A durable AI pipeline runs on Cloudflare: moderates the photo, generates a caricature via Replicate, and composites a final postcard
 4. A physical DNP dye-sub printer at the booth prints the postcard
 5. The attendee also gets a digital pickup link (QR code) to keep their postcard
@@ -25,8 +25,8 @@ An AI-powered photo booth built entirely on Cloudflare, demoed at NY Tech Week 2
 
 | Service | Binding | Purpose |
 |---|---|---|
-| **D1** (`nyc-booth-db`) | `DB` | SQLite — sessions, print jobs, events, scenes |
-| **R2** (`nyc-booth-images`) | `BUCKET` | Object storage for selfies, caricatures, and postcards |
+| **D1** | `DB` | SQLite — sessions, print jobs, events, scenes |
+| **R2** | `BUCKET` | Object storage for selfies, caricatures, and postcards |
 | **KV** (`nyc-booth-config`) | `CONFIG` | Scene definitions cache (60s TTL) |
 | **Workers AI** | `AI` | Llama 3.2 11B Vision for content moderation |
 | **Workflows** | `CARICATURE_WORKFLOW` | Durable 4-step AI pipeline per session |
@@ -197,7 +197,7 @@ Available at `/admin` (password-protected). Shows:
 D1 migrations live in `migrations/`. Apply them with:
 
 ```bash
-wrangler d1 migrations apply nyc-booth-db
+wrangler d1 migrations apply <your-database-name>
 ```
 
 ## Scenes configuration
