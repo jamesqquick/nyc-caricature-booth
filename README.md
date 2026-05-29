@@ -199,10 +199,6 @@ D1 migrations live in `migrations/`. Apply them with:
 wrangler d1 migrations apply <your-database-name>
 ```
 
-## Scenes configuration
-
-Scenes are loaded from KV.
-
 ## Docs
 
 - [Booth Operations Guide](docs/booth-ops.md) — event day runbook: startup checklist, troubleshooting, admin dashboard reference
