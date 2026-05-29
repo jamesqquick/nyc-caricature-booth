@@ -171,9 +171,13 @@ Create `print-agent/.env`:
 
 ```
 WORKER_URL=https://your-worker.workers.dev
+PRINT_AGENT_TOKEN=your_admin_password
 PRINTER_DRIVER=dnp
 PRINTER_NAME=DNP_DS620
 ```
+
+`PRINT_AGENT_TOKEN` must match the Worker's `ADMIN_PASSWORD` secret — the agent
+sends it as a bearer token to authenticate against the print-queue endpoints.
 
 Start the agent:
 

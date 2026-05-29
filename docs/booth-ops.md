@@ -55,6 +55,7 @@ cp .env.example .env
 | ------------------ | -------- | ------------- | ------------------------------------------------------------------------------------- |
 | `WORKER_URL`       | **Yes**  | —             | Base URL of the deployed Worker. Agent exits on startup if missing.                   |
 | `EVENT_ID`         | **Yes**  | —             | Event slug this agent prints for. Agent exits if missing. Can be passed as a CLI flag. |
+| `PRINT_AGENT_TOKEN`| **Yes**  | —             | Bearer token for the print-queue API. Must equal the Worker's `ADMIN_PASSWORD`. Agent exits if missing. |
 | `PRINTER_DRIVER`   | No       | `mock`        | Set to `dnp` to actually print on the DS620A. `mock` does **not** print.              |
 | `PRINTER_NAME`     | No       | `DNP_DS620`   | CUPS queue name (from `lpstat -p -d`). Only used when `PRINTER_DRIVER=dnp`.            |
 | `POLL_INTERVAL_MS` | No       | `5000`        | How often (ms) the agent polls for jobs.                                              |
@@ -65,14 +66,18 @@ A working booth `.env` looks like:
 ```
 WORKER_URL=https://caricature-booth.examples.workers.dev
 EVENT_ID=nyc-tech-week-2026
+PRINT_AGENT_TOKEN=your_admin_password
 PRINTER_DRIVER=dnp
 PRINTER_NAME=DNP_DS620
 ```
 
-> **Two things that will bite you:**
+> **Three things that will bite you:**
 >
 > - **`EVENT_ID` is required.** Without it (or the `--event-id` flag) the agent
 >   exits immediately with "Missing required --event-id flag or EVENT_ID env var."
+> - **`PRINT_AGENT_TOKEN` is required and must match the Worker's `ADMIN_PASSWORD`.**
+>   If it's missing the agent exits on startup; if it's wrong every poll fails
+>   with HTTP 401.
 > - **`PRINTER_DRIVER=mock` does not print.** In mock mode the agent writes the
 >   PDF to a spool directory instead of sending it to the printer. Use `dnp` for
 >   real prints.
@@ -122,6 +127,10 @@ After 3 consecutive failed polls the agent warns it can't reach the Worker.
 Check the laptop's network, that `WORKER_URL` is correct, and that the Worker is
 live.
 
+**Every poll fails with HTTP 401**
+`PRINT_AGENT_TOKEN` doesn't match the Worker's `ADMIN_PASSWORD`. Update the
+agent's `.env` (or rotate the Worker secret) so the two values are identical.
+
 **Jobs aren't printing (no errors)**
 
 - `PRINTER_DRIVER` is still `mock` — switch to `dnp`.
@@ -140,6 +149,8 @@ live.
 - "Missing required env var: WORKER_URL" — set `WORKER_URL` in `.env`.
 - "Missing required --event-id flag or EVENT_ID env var" — set `EVENT_ID` in
   `.env` or pass `--event-id <slug>`.
+- "Missing required env var: PRINT_AGENT_TOKEN" — set `PRINT_AGENT_TOKEN` in
+  `.env` to the Worker's `ADMIN_PASSWORD` value.
 
 **Reprinting a job**
 Use the **Retry print** action on the session row in the admin dashboard. It

@@ -39,7 +39,7 @@ async function hmacHex(key: string, payload: string): Promise<string> {
 }
 
 /** Constant-time string compare (lengths must match — short-circuit allowed). */
-function timingSafeEqual(a: string, b: string): boolean {
+export function timingSafeEqual(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
 	let diff = 0;
 	for (let i = 0; i < a.length; i++) {

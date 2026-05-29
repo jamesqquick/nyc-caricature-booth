@@ -14,4 +14,6 @@ export type AgentConfig = {
 	eventId: string;
 	pollIntervalMs: number;
 	batchSize: number;
+	/** Bearer token for the print-agent API — must equal the Worker's ADMIN_PASSWORD. */
+	printAgentToken: string;
 };

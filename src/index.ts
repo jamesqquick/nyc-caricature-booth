@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { adminAuthMiddleware } from './lib/admin-auth';
+import { printAgentAuthMiddleware } from './lib/print-agent-auth';
 import { loadEventContext } from './lib/event-ctx';
 import { page, escapeAttr } from './lib/html';
 import type { EventEnv } from './lib/types';
@@ -53,6 +54,10 @@ const app = new Hono<{ Bindings: Env }>();
 // /admin/login (GET + POST) and /admin/logout are exempted inside the middleware.
 app.use('/admin/*', adminAuthMiddleware());
 app.use('/api/admin/*', adminAuthMiddleware());
+
+// Print-agent auth middleware — bearer token (ADMIN_PASSWORD) on the
+// machine-to-machine print queue endpoints.
+app.use('/api/print-agent/*', printAgentAuthMiddleware());
 
 // Global routes
 app.route('/', healthRoutes);

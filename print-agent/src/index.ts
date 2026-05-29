@@ -54,11 +54,19 @@ function loadConfig(): AgentConfig {
 		process.exit(1);
 	}
 
+	const printAgentToken = process.env.PRINT_AGENT_TOKEN;
+	if (!printAgentToken) {
+		console.error("Missing required env var: PRINT_AGENT_TOKEN");
+		console.error("Set it to the Worker's ADMIN_PASSWORD value in print-agent/.env.");
+		process.exit(1);
+	}
+
 	return {
 		workerUrl: workerUrl.replace(/\/$/, ""),
 		eventId,
 		pollIntervalMs: Number(process.env.POLL_INTERVAL_MS) || 5000,
 		batchSize: Number(process.env.BATCH_SIZE) || 5,
+		printAgentToken,
 	};
 }
 
