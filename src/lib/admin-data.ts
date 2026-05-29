@@ -16,9 +16,9 @@ export interface AdminSessionRow {
 	createdAt: number | null;       // unix seconds
 	completedAt: number | null;     // unix seconds
 	/**
-	 * Pipeline duration in ms. Prefers the workflow-measured `pipeline_ms`
-	 * (precise, retry-aware processing time); falls back to wall-clock
-	 * (completed_at - created_at) for legacy rows where it's null.
+	 * Pipeline duration in ms — the workflow-measured `pipeline_ms` (true
+	 * end-to-end, retry-aware). Null for in-flight rows and legacy rows that
+	 * predate the measurement.
 	 */
 	pipelineDurationMs: number | null;
 	/** "jam***@example.com" or null if no email captured. */
@@ -85,12 +85,10 @@ export async function loadAdminSessions(env: Env): Promise<AdminSessionRow[]> {
 		.all<RawSessionRow>();
 
 	return results.map<AdminSessionRow>((r) => {
-		const pipelineMs =
-			r.pipeline_ms != null
-				? r.pipeline_ms
-				: r.created_at != null && r.completed_at != null
-					? (r.completed_at - r.created_at) * 1000
-					: null;
+		// Only the workflow-measured pipeline_ms is meaningful. Legacy rows
+		// (created_at == completed_at) would compute to 0ms via wall-clock, so
+		// we show them as unknown (null → "—") rather than a misleading 0.
+		const pipelineMs = r.pipeline_ms;
 		return {
 			sessionId: r.id,
 			status: r.status ?? "pending",
@@ -138,10 +136,11 @@ export interface AdminStats {
  *   2. Scene breakdown grouped by scene_id.
  *
  * The aggregate query uses COUNT(CASE WHEN …) so we only scan `sessions` once.
- * Pipeline avg is computed in SQL over completed rows, preferring the
- * workflow-measured `pipeline_ms` (converted to seconds) and falling back to
- * wall-clock (completed_at - created_at) for legacy rows — kept in seconds and
- * rounded at the JSON layer.
+ * Pipeline avg is computed in SQL over completed rows that have a real
+ * `pipeline_ms` measurement (converted to seconds). Legacy rows predating
+ * pipeline_ms are deliberately excluded: their created_at == completed_at, so
+ * including them would average in zeros and drag the metric toward 0 — the very
+ * bug this is fixing. Kept in seconds and rounded at the JSON layer.
  */
 export async function loadAdminStats(env: Env): Promise<AdminStats> {
 	const [aggRes, printedRes, scenesRes] = await env.DB.batch<
@@ -154,12 +153,8 @@ export async function loadAdminStats(env: Env): Promise<AdminStats> {
 				COUNT(CASE WHEN status = 'errored'   THEN 1 END) AS errored,
 				COUNT(CASE WHEN status NOT IN ('completed', 'errored') THEN 1 END) AS in_flight,
 				COUNT(CASE WHEN email IS NOT NULL AND email != '' THEN 1 END) AS emails,
-				AVG(CASE WHEN status = 'completed'
-				         THEN COALESCE(
-				              pipeline_ms / 1000.0,
-				              CASE WHEN completed_at IS NOT NULL AND created_at IS NOT NULL
-				                   THEN (completed_at - created_at) END
-				         ) END) AS avg_pipeline_sec
+				AVG(CASE WHEN status = 'completed' AND pipeline_ms IS NOT NULL
+				         THEN pipeline_ms / 1000.0 END) AS avg_pipeline_sec
 			 FROM sessions`,
 		),
 		env.DB.prepare(
