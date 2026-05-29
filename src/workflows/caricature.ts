@@ -77,6 +77,11 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 	async run(event: WorkflowEvent<CaricaturePayload>, step: WorkflowStep) {
 		const { sessionId, eventId, selfieKey, sceneId, publicOrigin, note } = event.payload;
 		const instanceId = event.instanceId;
+		// True pipeline start. event.timestamp is the durable instance-creation
+		// time (constant across replays/retries), so computing elapsed against it
+		// in the store step yields real end-to-end processing time — not just one
+		// step's duration.
+		const pipelineStartMs = event.timestamp.getTime();
 
 		// Hello step is preserved for now so the skeleton test endpoint still works.
 		const hello = await step.do("hello", async () => {
@@ -104,6 +109,37 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 		// (either `done` after store, or `errored` on any throw) and that
 		// the DO is cleaned up afterwards.
 		try {
+			// Insert a 'processing' row at the START of the pipeline so D1 has a
+			// real `created_at` (the schema default fires here, not at the final
+			// store). This makes the dashboard's wall-clock fallback meaningful,
+			// fixes the always-0ms duration bug, and lets in-flight sessions show
+			// up in the admin view before they complete. ON CONFLICT DO NOTHING so
+			// a workflow re-run never resets created_at or clobbers later state.
+			await step.do(
+				"init-session-row",
+				{
+					retries: { limit: 3, delay: "1 second", backoff: "exponential" },
+					timeout: "30 seconds",
+				},
+				async () => {
+					await this.env.DB.prepare(
+						`INSERT INTO sessions
+							(id, event_id, status, scene_id, selfie_key, workflow_instance_id)
+						 VALUES (?, ?, 'processing', ?, ?, ?)
+						 ON CONFLICT(id) DO NOTHING`,
+					)
+						.bind(
+							sessionId,
+							eventId ?? null,
+							sceneId ?? null,
+							selfieKey,
+							instanceId,
+						)
+						.run();
+					return { sessionId };
+				},
+			);
+
 			trackEvent(this.env.ANALYTICS, "workflow.moderating", sessionId);
 			await this.markSession(sessionId, "moderating", { selfieKey });
 
@@ -311,16 +347,24 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				async () => {
 					// Print job is NOT enqueued here anymore — printing is now
 					// user-initiated from the /kiosk/done screen via POST
-					// /api/kiosk/print. Workflow's only D1 write is the session
-					// upsert. Attendees who only want the digital copy never
-					// produce a print_jobs row.
+					// /api/kiosk/print. This upsert finalizes the row that
+					// init-session-row created at the start of the pipeline.
+					// Attendees who only want the digital copy never produce a
+					// print_jobs row.
 					//
 					// event_id scopes the session to its event so multi-event
 					// admin queries and gallery feeds can filter by event.
+					// `pipeline_ms` is the true end-to-end pipeline duration:
+					// now (store time) minus the durable instance-creation time.
+					// This spans moderate + generate + composite, not just one
+					// step. The `created_at` set by the earlier init-session-row
+					// insert is preserved here (ON CONFLICT DO UPDATE never
+					// touches it).
+					const pipelineMs = Date.now() - pipelineStartMs;
 					const sessionResult = await this.env.DB.prepare(
 						`INSERT INTO sessions
-							(id, event_id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
-						 VALUES (?, ?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
+							(id, event_id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at, pipeline_ms)
+						 VALUES (?, ?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch(), ?)
 						 ON CONFLICT(id) DO UPDATE SET
 							event_id=excluded.event_id,
 							status='completed',
@@ -331,6 +375,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							postcard_key=excluded.postcard_key,
 							workflow_instance_id=excluded.workflow_instance_id,
 							completed_at=excluded.completed_at,
+							pipeline_ms=excluded.pipeline_ms,
 							error_msg=NULL`,
 					)
 						.bind(
@@ -342,6 +387,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							generate.caricatureKey,
 							composite.postcardKey,
 							instanceId,
+							pipelineMs,
 						)
 						.run();
 
