@@ -176,6 +176,3 @@ print-agent/spool/
 
 # Git worktrees
 .worktrees/
-
-# Docs (operational, not version-controlled)
-docs/
