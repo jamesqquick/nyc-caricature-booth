@@ -42,7 +42,6 @@ function loadConfig(): AgentConfig {
 	if (!workerUrl) {
 		console.error("Missing required env var: WORKER_URL");
 		console.error("Copy print-agent/.env.example to print-agent/.env and fill in the value.");
-		console.error("Example: WORKER_URL=https://nyc-caricature-booth.examples.workers.dev");
 		process.exit(1);
 	}
 

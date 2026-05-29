@@ -190,7 +190,6 @@ Available at `/admin` (password-protected). Shows:
 - Stat cards: total sessions, completed, errored, avg pipeline time, prints
 - Live session table with per-row actions (retry print, resend email, delete)
 - Analytics at `/admin/metrics`
-- "Seed test print job" link to verify the end-to-end print path before an event
 
 ## Database
 
@@ -199,10 +198,6 @@ D1 migrations live in `migrations/`. Apply them with:
 ```bash
 wrangler d1 migrations apply <your-database-name>
 ```
-
-## Scenes configuration
-
-Scenes are loaded from KV. If the scene picker is blank, use the **Re-seed scenes** button in the admin dashboard to restore the KV entries.
 
 ## Docs
 
