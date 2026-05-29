@@ -15,19 +15,14 @@ laptop at the booth**. It is a polling client: on a fixed interval it asks the
 Worker for pending print jobs for one event, renders each finished postcard to a
 landscape 4×6" PDF, and sends it to the printer through CUPS.
 
-It does **not** receive pushed jobs, and it does **not** talk to any database or
-storage directly. Everything goes through the Worker over plain HTTP.
-
 ### How it connects
 
-The agent only needs to reach the Worker. `WORKER_URL` is the base URL for all
+`WORKER_URL` is the base URL for all
 three things it does:
 
 1. **Fetch jobs** — `GET {WORKER_URL}/api/print-agent/jobs?eventId=<slug>&limit=N`
 2. **Download the postcard image** — `GET {WORKER_URL}/e/{eventId}/api/run-img?key=<postcard_key>`
 3. **Acknowledge results** — `POST {WORKER_URL}/api/print-agent/jobs/{id}/ack`
-
-No database credentials are required — only `WORKER_URL` and `EVENT_ID`.
 
 ## Prerequisites
 
@@ -37,7 +32,7 @@ Before an event, the booth laptop needs:
 - The **DNP DS620A** dye-sublimation driver installed, and the printer added in
   **System Settings → Printers & Scanners**.
 - **4×6" media** loaded in the printer.
-- **Node.js 18+** (the agent relies on the built-in `fetch`).
+- **Node.js 18+**
 - The repo cloned locally with dependencies installed (`npm install` inside
   `print-agent/`).
 
@@ -69,7 +64,7 @@ A working booth `.env` looks like:
 
 ```
 WORKER_URL=https://caricature-booth.examples.workers.dev
-EVENT_ID=nyc-2025
+EVENT_ID=nyc-tech-week-2026
 PRINTER_DRIVER=dnp
 PRINTER_NAME=DNP_DS620
 ```
@@ -93,7 +88,7 @@ npm start
 Or override the event without editing `.env`:
 
 ```bash
-npm start -- --event-id nyc-2025
+npm start -- --event-id nyc-tech-week-2026
 ```
 
 The `--event-id` flag takes precedence over the `EVENT_ID` env var. There is no
