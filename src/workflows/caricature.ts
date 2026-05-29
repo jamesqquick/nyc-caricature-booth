@@ -77,6 +77,11 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 	async run(event: WorkflowEvent<CaricaturePayload>, step: WorkflowStep) {
 		const { sessionId, eventId, selfieKey, sceneId, publicOrigin, note } = event.payload;
 		const instanceId = event.instanceId;
+		// True pipeline start. event.timestamp is the durable instance-creation
+		// time (constant across replays/retries), so computing elapsed against it
+		// in the store step yields real end-to-end processing time — not just one
+		// step's duration.
+		const pipelineStartMs = event.timestamp.getTime();
 
 		// Hello step is preserved for now so the skeleton test endpoint still works.
 		const hello = await step.do("hello", async () => {
@@ -342,16 +347,20 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 				async () => {
 					// Print job is NOT enqueued here anymore — printing is now
 					// user-initiated from the /kiosk/done screen via POST
-					// /api/kiosk/print. Workflow's only D1 write is the session
-					// upsert. Attendees who only want the digital copy never
-					// produce a print_jobs row.
+					// /api/kiosk/print. This upsert finalizes the row that
+					// init-session-row created at the start of the pipeline.
+					// Attendees who only want the digital copy never produce a
+					// print_jobs row.
 					//
 					// event_id scopes the session to its event so multi-event
 					// admin queries and gallery feeds can filter by event.
-					// `pipeline_ms` stores the precise, retry-aware processing time
-					// the workflow already measured (composite.elapsedMs). The
-					// `created_at` set by the earlier init-session-row insert is
-					// preserved here (ON CONFLICT DO UPDATE never touches it).
+					// `pipeline_ms` is the true end-to-end pipeline duration:
+					// now (store time) minus the durable instance-creation time.
+					// This spans moderate + generate + composite, not just one
+					// step. The `created_at` set by the earlier init-session-row
+					// insert is preserved here (ON CONFLICT DO UPDATE never
+					// touches it).
+					const pipelineMs = Date.now() - pipelineStartMs;
 					const sessionResult = await this.env.DB.prepare(
 						`INSERT INTO sessions
 							(id, event_id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at, pipeline_ms)
@@ -378,7 +387,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							generate.caricatureKey,
 							composite.postcardKey,
 							instanceId,
-							composite.elapsedMs,
+							pipelineMs,
 						)
 						.run();
 
