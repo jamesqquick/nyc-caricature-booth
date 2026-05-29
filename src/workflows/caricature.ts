@@ -104,6 +104,37 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 		// (either `done` after store, or `errored` on any throw) and that
 		// the DO is cleaned up afterwards.
 		try {
+			// Insert a 'processing' row at the START of the pipeline so D1 has a
+			// real `created_at` (the schema default fires here, not at the final
+			// store). This makes the dashboard's wall-clock fallback meaningful,
+			// fixes the always-0ms duration bug, and lets in-flight sessions show
+			// up in the admin view before they complete. ON CONFLICT DO NOTHING so
+			// a workflow re-run never resets created_at or clobbers later state.
+			await step.do(
+				"init-session-row",
+				{
+					retries: { limit: 3, delay: "1 second", backoff: "exponential" },
+					timeout: "30 seconds",
+				},
+				async () => {
+					await this.env.DB.prepare(
+						`INSERT INTO sessions
+							(id, event_id, status, scene_id, selfie_key, workflow_instance_id)
+						 VALUES (?, ?, 'processing', ?, ?, ?)
+						 ON CONFLICT(id) DO NOTHING`,
+					)
+						.bind(
+							sessionId,
+							eventId ?? null,
+							sceneId ?? null,
+							selfieKey,
+							instanceId,
+						)
+						.run();
+					return { sessionId };
+				},
+			);
+
 			trackEvent(this.env.ANALYTICS, "workflow.moderating", sessionId);
 			await this.markSession(sessionId, "moderating", { selfieKey });
 
@@ -317,10 +348,14 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 					//
 					// event_id scopes the session to its event so multi-event
 					// admin queries and gallery feeds can filter by event.
+					// `pipeline_ms` stores the precise, retry-aware processing time
+					// the workflow already measured (composite.elapsedMs). The
+					// `created_at` set by the earlier init-session-row insert is
+					// preserved here (ON CONFLICT DO UPDATE never touches it).
 					const sessionResult = await this.env.DB.prepare(
 						`INSERT INTO sessions
-							(id, event_id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at)
-						 VALUES (?, ?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch())
+							(id, event_id, status, scene_id, scene_name, selfie_key, caricature_key, postcard_key, workflow_instance_id, completed_at, pipeline_ms)
+						 VALUES (?, ?, 'completed', ?, ?, ?, ?, ?, ?, unixepoch(), ?)
 						 ON CONFLICT(id) DO UPDATE SET
 							event_id=excluded.event_id,
 							status='completed',
@@ -331,6 +366,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							postcard_key=excluded.postcard_key,
 							workflow_instance_id=excluded.workflow_instance_id,
 							completed_at=excluded.completed_at,
+							pipeline_ms=excluded.pipeline_ms,
 							error_msg=NULL`,
 					)
 						.bind(
@@ -342,6 +378,7 @@ export class CaricatureWorkflow extends WorkflowEntrypoint<Env, CaricaturePayloa
 							generate.caricatureKey,
 							composite.postcardKey,
 							instanceId,
+							composite.elapsedMs,
 						)
 						.run();
 
